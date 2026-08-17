@@ -1,0 +1,79 @@
+# A working starting point for running Chandlery images.
+#
+# Deliberately absent: any Tidewaiter configuration. Auto-update policy belongs
+# to whoever is deploying, and Tidewaiter documents its own labels and defaults
+# far better than a copy here that would drift. See PLAN.md section 5.
+#
+#   docker compose up -d
+#   docker compose logs -f bedrock
+#   docker exec chandlery-bedrock chandlery-console say hello
+
+name: chandlery
+
+services:
+  bedrock:
+    # The tag is the version. Pin it to control exactly when you move, or track
+    # :latest and let a deployer swap you forward when the server is empty.
+    image: ghcr.io/danielbodart/chandlery/bedrock:latest
+    container_name: chandlery-bedrock
+    restart: unless-stopped
+
+    # The whole point of the stop hook is that the world is saved before the
+    # process exits. Give a large world time to finish; Docker sends SIGKILL
+    # when this runs out, and that is the outcome to avoid.
+    stop_grace_period: 5m
+
+    ports:
+      - "19132:19132/udp"
+
+    volumes:
+      # A named volume inherits the right ownership from the image. A bind
+      # mount does not — chown it to 1000:1000 on the host first, or the
+      # container will tell you so and refuse to start.
+      - bedrock-data:/data
+
+    networks:
+      - games
+
+  valheim:
+    image: ghcr.io/danielbodart/chandlery/valheim:latest
+    container_name: chandlery-valheim
+    restart: unless-stopped
+
+    # Valheim writes the world on shutdown, and large worlds are not quick.
+    stop_grace_period: 5m
+
+    environment:
+      VALHEIM_NAME: Chandlery
+      VALHEIM_WORLD: Dedicated
+      # Required, at least 5 characters, and it must not appear in the world
+      # name. Put it in a .env file next to this one rather than here.
+      VALHEIM_PASSWORD: ${VALHEIM_PASSWORD:?set VALHEIM_PASSWORD in .env}
+      VALHEIM_PUBLIC: "1"
+
+    ports:
+      - "2456:2456/udp"
+      # The Steam query port, which is where the health check looks. Valheim
+      # derives it from the game port and will not let you set it separately.
+      - "2457:2457/udp"
+
+    volumes:
+      - valheim-data:/data
+
+    networks:
+      - games
+
+networks:
+  games:
+    # Bedrock binds an IPv6 socket unconditionally and exits without one,
+    # reporting that its ports are in use — which they are not. Give it IPv6
+    # and that goes away. (Also check the host is not booted with
+    # ipv6.disable=1, which no container setting can work around.)
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: fd00:cha:d1e5::/64
+
+volumes:
+  bedrock-data:
+  valheim-data:

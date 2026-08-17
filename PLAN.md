@@ -2,7 +2,7 @@
 
 > A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game — baked into an image, versioned, ready to sail.
 
-Status: **building**. Milestone 1 (base skeleton) is done and tested; the rest of §8 is still ahead. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
+Status: **building**. Milestones 1-4 are done and tested (skeleton, Bedrock, its CI, Valheim); milestone 5 is blocked on a decision (§7.1) and milestone 6 is the homelab migration. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
 
 ---
 
