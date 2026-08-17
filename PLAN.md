@@ -62,10 +62,7 @@ chandlery/
     Dockerfile     #   FROM base; steamcmd +app_update 896660 baked in; tag = buildid
     stop-hook      #   forward SIGINT (Valheim saves on SIGINT/SIGTERM)
     health         #   Steam A2S query
-  hytale/
-    Dockerfile     #   FROM base; Hytale download/OAuth baked in; tag = version
-    stop-hook      #   TBD from the server's shutdown semantics
-    health         #   none unless a protocol probe turns up (TBD)
+  hytale/          # not written: blocked on the decision in 7.1
   test/            # fixtures + tests, driven against real containers
   .github/workflows/
     <game>.yml     #   per-game: poll source version, rebuild+push on change
@@ -118,7 +115,7 @@ So the images stay plain: build artefacts any deployer (Tidewaiter, Watchtower, 
 | --- | --- | --- |
 | **Bedrock** | write `stop` to server stdin via a FIFO, wait for exit (BDS does not save cleanly on a bare SIGTERM) | **Yes** — RakNet unconnected-ping via `mc-monitor status-bedrock`; the MOTD reply proves the server is answering |
 | **Valheim** | forward `SIGINT` and wait (that is the signal it saves on) | **Yes** — Steam `A2S_INFO` via `chandlery-a2s`, written here: no equivalent single-purpose binary exists, and it handles the challenge/response modern Steam servers require |
-| **Hytale** | TBD — determine the server's clean-shutdown command/signal | **No** (for now) — no protocol probe known; port-bound is all we'd have, and the deployer already does that. Add one if a real probe turns up |
+| **Hytale** | TBD — determine the server's clean-shutdown command/signal | **No** (for now) — no protocol probe known; port-bound is all we'd have, and the deployer already does that. Add one if a real probe turns up. Blocked behind §7.1 regardless |
 
 The rule for the third column: **add a `HEALTHCHECK` only when we can do better than the deployer's default.** A port-bound check is the default everywhere, so repeating it in the image buys nothing.
 
@@ -162,19 +159,74 @@ homelab migration in §8.6.
 ---
 
 ## 7. Open questions (resolve in build)
-- **Hytale auth in CI.** Its server download needs OAuth. Can a build-time bake use a machine/service credential, or must Hytale stay runtime-download (breaking image=version for that one)? Investigate before committing Hytale to the baked model. Its rootfs is ~3.9 GB (measured), so also weigh image size.
+- **Hytale auth in CI** — investigated; see §7.1. It now needs a decision, not more investigation.
 - **Layering to keep updates small.** Split each Dockerfile so rarely-changing assets sit in a lower layer and the volatile binary in the top layer, so a version bump re-pulls only the small layer (helps MC a lot; Steam's `app_update` rewrites broadly, so gains are limited — measure).
 - **Steam auth** — public dedicated servers install via `login anonymous`; confirm none of ours need a real account.
 - **Base image choice** — alpine vs debian-slim per game (Bedrock's binary wants glibc → debian-slim; Steam games likewise). The base may need to be glibc, not musl.
 - **Version marker** for CI "did it change" — newest pushed tag vs a state file.
 - Do we generate per-game Dockerfiles from a template (docker-gameserver style) or hand-write three? Three is fine now; template if the count grows.
 
+### 7.1 Hytale: what the OAuth question turned out to be
+
+Investigated against primary sources — the official downloader
+(`https://downloader.hytale.com/hytale-downloader.zip`, build `2026.05.13`,
+its `QUICKSTART.md` and its actual flag set). Hypixel's own *Server Provider
+Authentication Guide* is the one document that could change the answer and it
+sits behind Cloudflare, unreadable from here.
+
+**There are two separate OAuth flows, and only one of them is a problem.**
+
+*The server's own login is not the blocker.* A Hytale server authenticates
+itself (`/auth login device`) before it will accept players. That sounds fatal
+for hands-off deployment, but the credentials persist on the data volume and
+refresh themselves, so once a server has logged in, restarts — and image swaps
+— need no login at all. Tidewaiter's half of the loop is fine.
+
+*The download is the blocker.* The downloader offers exactly these flags:
+
+```
+-check-update  -credentials-path  -download-path  -list-patchlines
+-patchline     -print-version     -skip-update-check  -version
+```
+
+There is **no service account, no client-credentials grant, no token flag**.
+The only automation hook is `-credentials-path`, pointing at a file produced by
+an interactive device login against *a personal Hytale account*. Worse, the
+tool rewrites that file as tokens refresh, and its own guide warns that an
+automated caller must retain the updated file — so a CI secret would have to be
+written back after every run.
+
+And `-print-version` needs the same credential. That is the sharp end: **we
+cannot even detect a new Hytale release unattended**, whichever way the
+download happens. Rebuild-on-release, not just bake-at-build, is what is
+actually blocked.
+
+**The options, none of which are mine to pick:**
+
+| | What it costs |
+| --- | --- |
+| **A. Ask Hypixel for a provider credential** | Best outcome, and the *Server Provider Authentication Guide* suggests such a path may exist. Costs a support conversation and an unknown wait. |
+| **B. A personal account's credentials file as a CI secret** | Works today. Puts a personal Hytale credential in CI, needs the workflow to write the refreshed token back to the secret after each run, and is worth checking against Hytale's terms before doing. |
+| **C. Runtime download**, as every existing Hytale image does | Gives up image = version for this one game — the thing this project exists for. |
+| **D. Bake by hand**: a human runs the build locally with their own credentials and pushes the image | Keeps image = version, gives up *automatic on release*. Cheapest honest option while A is pending. |
+
+Recommendation: pursue **A**, run **D** in the meantime. Do not build a Hytale
+image until this is settled — the choice changes what the image is.
+
+**Other facts worth carrying forward** (secondary sources, unverified without
+an account): the server is `HytaleServer.jar` + `Assets.zip` on **Java 25**,
+wants ~4 GB RAM, and listens on **UDP 5520 (QUIC)** — not the plan's assumed
+`conntrack`-friendly shape, and worth re-checking against Tidewaiter's
+detectors. The server runs on arm64, but the downloader ships amd64 only.
+
+---
+
 ## 8. Build order (milestones)
 1. **Base skeleton**: tini + entrypoint (stop-hook dispatch) + healthcheck dispatch + non-root + /data. A trivial "sleep server" proves stop/health wiring.
 2. **Bedrock**: Mojang adapter (baked, drop symbols), stdin-`stop` hook, RakNet health. Replace the LinuxGSM Bedrock servers first (the ones we fought this month).
 3. **Bedrock CI**: rebuild-on-Mojang-release, tag=version, push.
 4. **Valheim**: SteamCMD adapter (896660), SIGINT stop, A2S health, CI on buildid.
-5. **Hytale**: resolve auth (§7); if bake-able, adapter + CI; else document why it stays runtime-download.
+5. **Hytale**: *blocked on a decision, not on work* — see §7.1. The download and even the version check need a personal-account OAuth credential; pick an option there before any Hytale image is written.
 6. **Ship + adopt**: publish images, migrate the homelab (`danielbodart/server`) off LinuxGSM one game at a time — configuring Tidewaiter per its own docs, deploy-side (§5).
 
 ## 9. Non-goals (v1)
