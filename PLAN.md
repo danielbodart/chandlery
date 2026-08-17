@@ -16,7 +16,7 @@ A mono-repo of **clean-room, Docker-native game-server images**, where the **ima
 
 First three games: **Minecraft Bedrock**, **Valheim**, **Hytale**. Structured so more slot in via a small per-game adapter.
 
-This is the **build** half of the fleet; its sibling [`tidewaiter`](https://github.com/danielbodart/tidewaiter) is the **deploy** half — it watches these images and swaps a running container for a newer one *when the server is idle*, health-gated, with rollback. The loop closes end to end, but the two stay decoupled: Chandlery does **not** bake Tidewaiter labels into its images — deploy policy lives in the deployer's compose file (see §5). (Both sit beside [`portical`](https://github.com/danielbodart/portical) in the harbour.)
+This is the **build** half of the fleet; its sibling [`tidewaiter`](https://github.com/danielbodart/tidewaiter) is the **deploy** half — it watches these images and swaps a running container for a newer one *when the server is idle*, health-gated, with rollback. The loop closes end to end, but the two stay decoupled: Chandlery bakes **no** Tidewaiter labels or config into its images — deploy policy is the deployer's, and its details live in Tidewaiter's own docs (see §5). (Both sit beside [`portical`](https://github.com/danielbodart/portical) in the harbour.)
 
 ---
 
@@ -53,19 +53,19 @@ chandlery/
   base/            # the shared skeleton image
     Dockerfile     #   tini as PID 1, entrypoint framework, non-root user, /data
     entrypoint.sh  #   runs the server; on SIGTERM runs the game's stop-hook, waits
-    healthcheck.sh #   dispatches to the game's health probe
+    healthcheck.sh #   dispatches to the game's probe (only games that have a real one)
   bedrock/
     Dockerfile     #   FROM base; MOJANG download baked in; tag = version
     stop-hook      #   write "stop" to the server's stdin (FIFO)
-    health         #   RakNet unconnected-ping (or port-bound)
+    health         #   RakNet unconnected-ping
   valheim/
     Dockerfile     #   FROM base; steamcmd +app_update 896660 baked in; tag = buildid
     stop-hook      #   forward SIGINT (Valheim saves on SIGINT/SIGTERM)
-    health         #   Steam A2S query (or port-bound)
+    health         #   Steam A2S query
   hytale/
     Dockerfile     #   FROM base; Hytale download/OAuth baked in; tag = version
     stop-hook      #   TBD from the server's shutdown semantics
-    health         #   port-bound (protocol probe TBD)
+    health         #   none unless a protocol probe turns up (TBD)
   .github/workflows/
     <game>.yml     #   per-game: poll source version, rebuild+push on change
 ```
@@ -74,7 +74,7 @@ chandlery/
 - **`tini`** as PID 1 (zombie reaping, clean signal forwarding).
 - **Entrypoint** execs the server, and on `SIGTERM` runs the game's **stop hook** (an in-band save+quit) and **waits** for a clean exit, bounded by `stop_grace_period`. This is the itzg/mc-server-runner idea, generalised behind a per-game hook.
 - **Non-root user**, world/config on a **`/data`** volume (so a container recreate keeps the world; the game *binaries* live in the image).
-- **Health check** dispatches to the game's probe; default to a generic **port-bound / TCP-connect** check when no protocol probe exists (mirrors Tidewaiter's health ladder).
+- **Health check only when we can beat the default.** An image gets a `HEALTHCHECK` *only* if the game gives us a probe that says more than "the port is open" — a protocol-level query that proves the server is actually answering players. Tidewaiter (and any other deployer) already does port-bound checks itself, so a port-bound `HEALTHCHECK` in the image adds a second copy of a check it already has, and a worse one: ours can't see the container's port mapping. When there's no better probe, ship no `HEALTHCHECK` and let the deployer's default do the job.
 
 ### Per-game source adapter (build time)
 Each game's Dockerfile does one job at build: **install the exact version and bake it in**.
@@ -95,31 +95,26 @@ Then Tidewaiter (running on the host) sees the new `:latest` digest and, when th
 
 ---
 
-## 5. Tidewaiter integration (deploy-side config, not baked in)
+## 5. Tidewaiter integration (nothing baked in)
 
-Chandlery images carry **no Tidewaiter labels**. Auto-update policy is a deployment decision — which host, which games may swap unattended, how idle counts as idle — and it changes without the image changing. Baking it in would make Chandlery images opinionated about a deployer they shouldn't depend on, and would mean rebuilding an image just to change a policy. So the images stay plain: build artefacts that any deployer (Tidewaiter, Watchtower, a human, nothing at all) can consume.
+Chandlery images carry **no Tidewaiter labels and no Tidewaiter config**. Two reasons:
 
-Instead we **document** the labels alongside each game, and ship an example compose file that sets them. Recommended starting point:
+- **It isn't ours to decide.** Auto-update policy — which host, which games may swap unattended, what counts as idle — is a deployment decision that changes without the image changing. Baking it in would mean rebuilding an image to change a policy, and would tie a build artefact to one particular deployer.
+- **It would go stale.** Tidewaiter's own labels, defaults and health ladder are documented in Tidewaiter, and they'll keep moving. A copy here would be a second source of truth that drifts. For how to configure a deployment, read [tidewaiter](https://github.com/danielbodart/tidewaiter) — not this file.
 
-| Label | Bedrock | Valheim | Hytale |
-| --- | --- | --- | --- |
-| `tidewaiter.autoupdate` | `registry` | `registry` | `registry` |
-| `tidewaiter.detector` | `conntrack` (UDP) | `conntrack` (UDP) | `conntrack` |
-| `tidewaiter.health` | `docker,port-bound` | `docker,port-bound` | `port-bound` |
-
-(Bedrock/Valheim are UDP, so conntrack is the detector that can see players — see the tidewaiter plan.)
-
-Note the `docker` health source above still works: it reads the image's own `HEALTHCHECK`, which Chandlery *does* provide (§3). That's the real integration point — a genuine health check in the image — and it needs no labels.
+So the images stay plain: build artefacts any deployer (Tidewaiter, Watchtower, a human, nothing at all) can consume. The one thing Chandlery contributes to the deploy side is a `HEALTHCHECK` — and only where it beats what the deployer would do anyway (§3, §6).
 
 ---
 
 ## 6. Graceful stop & health, per game
 
-| Game | Stop (save before exit) | Health probe |
+| Game | Stop (save before exit) | `HEALTHCHECK` in the image? |
 | --- | --- | --- |
-| **Bedrock** | write `stop` to server stdin via a FIFO, wait for exit (BDS does not save cleanly on a bare SIGTERM) | RakNet unconnected-ping on the game port (returns MOTD); fallback port-bound |
-| **Valheim** | forward `SIGINT`/`SIGTERM` (Valheim saves the world on signal) and wait | Steam A2S_INFO query; fallback port-bound |
-| **Hytale** | TBD — determine the server's clean-shutdown command/signal | port-bound; protocol probe TBD |
+| **Bedrock** | write `stop` to server stdin via a FIFO, wait for exit (BDS does not save cleanly on a bare SIGTERM) | **Yes** — RakNet unconnected-ping on the game port returns the MOTD, which proves the server is answering |
+| **Valheim** | forward `SIGINT`/`SIGTERM` (Valheim saves the world on signal) and wait | **Yes** — Steam `A2S_INFO` query, same reasoning |
+| **Hytale** | TBD — determine the server's clean-shutdown command/signal | **No** (for now) — no protocol probe known; port-bound is all we'd have, and the deployer already does that. Add one if a real probe turns up |
+
+The rule for the third column: **add a `HEALTHCHECK` only when we can do better than the deployer's default.** A port-bound check is the default everywhere, so repeating it in the image buys nothing.
 
 Set a generous `stop_grace_period` in the shipped compose so a large world save finishes before Docker sends SIGKILL.
 
@@ -139,10 +134,10 @@ Set a generous `stop_grace_period` in the shipped compose so a large world save 
 3. **Bedrock CI**: rebuild-on-Mojang-release, tag=version, push.
 4. **Valheim**: SteamCMD adapter (896660), SIGINT stop, A2S health, CI on buildid.
 5. **Hytale**: resolve auth (§7); if bake-able, adapter + CI; else document why it stays runtime-download.
-6. **Ship + adopt**: publish images, ship an example compose showing the Tidewaiter labels (set deploy-side, not baked — §5), migrate the homelab (`danielbodart/server`) off LinuxGSM one game at a time.
+6. **Ship + adopt**: publish images, migrate the homelab (`danielbodart/server`) off LinuxGSM one game at a time — configuring Tidewaiter per its own docs, deploy-side (§5).
 
 ## 9. Non-goals (v1)
 - No mod/plugin management surface (that's itzg's turf for Java — we're not doing Minecraft Java here; itzg stays for Java).
 - No panel/UI.
 - No multi-host orchestration.
-- Chandlery builds & bakes images; it does **not** update running containers — that's Tidewaiter. Nor does it bake Tidewaiter labels: deploy policy is the deployer's, set in compose (§5).
+- Chandlery builds & bakes images; it does **not** update running containers — that's Tidewaiter. Nor does it carry Tidewaiter labels, config or documentation: deploy policy is the deployer's, and Tidewaiter documents its own (§5).

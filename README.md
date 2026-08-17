@@ -17,7 +17,7 @@ Chandlery is the **build** half of a hands-off homelab: it turns each game relea
 
 > upstream game release → CI rebuilds `image = version` → Tidewaiter deploys it when the tide's out.
 
-The two stay decoupled, though: Chandlery does **not** bake Tidewaiter labels into its images. Auto-update policy belongs to whoever is deploying, so it lives in their compose file — we document the labels and ship an example compose instead. What the images *do* provide is a real `HEALTHCHECK`, which is what a deployer actually needs to gate a swap.
+The two stay decoupled, though: Chandlery bakes **no** Tidewaiter labels or config into its images. Auto-update policy belongs to whoever is deploying, and Tidewaiter documents its own labels and defaults — better than a copy here that would drift. Images do ship a `HEALTHCHECK`, but only where a game gives us a probe that beats the port-bound check a deployer already runs: a RakNet ping for Bedrock, `A2S_INFO` for Valheim. Where we can't do better, we ship none.
 
 Both sit beside [**portical**](https://github.com/danielbodart/portical) in the harbour.
 
