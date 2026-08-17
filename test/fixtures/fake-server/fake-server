@@ -1,0 +1,22 @@
+#!/bin/sh
+# A stand-in for a game server that behaves the way the awkward ones do:
+# it flatly ignores SIGTERM and shuts down cleanly only when told "stop" on
+# its console. If the entrypoint's wiring is wrong, this never saves.
+trap 'echo "fake-server: ignoring SIGTERM"' TERM
+
+echo "fake-server: running as $(id -un)"
+echo "fake-server: listening"
+while :; do
+    # A signal interrupts read; that is not EOF. The entrypoint holds the
+    # console open, so a genuine EOF cannot happen and retrying cannot spin.
+    IFS= read -r line || continue
+    echo "fake-server: console said [$line]"
+    case "$line" in
+        stop)
+            echo "fake-server: saving world"
+            sleep 1
+            echo "fake-server: world saved"
+            exit 0
+            ;;
+    esac
+done

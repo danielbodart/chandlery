@@ -2,7 +2,7 @@
 
 > A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game — baked into an image, versioned, ready to sail.
 
-Status: **planning**. This document is the brief for the build session. Nothing here is built yet.
+Status: **building**. Milestone 1 (base skeleton) is done and tested; the rest of §8 is still ahead. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
 
 ---
 
@@ -53,7 +53,7 @@ chandlery/
   base/            # the shared skeleton image
     Dockerfile     #   tini as PID 1, entrypoint framework, non-root user, /data
     entrypoint.sh  #   runs the server; on SIGTERM runs the game's stop-hook, waits
-    healthcheck.sh #   dispatches to the game's probe (only games that have a real one)
+    console.sh     #   chandlery-console: type a command at the running server
   bedrock/
     Dockerfile     #   FROM base; MOJANG download baked in; tag = version
     stop-hook      #   write "stop" to the server's stdin (FIFO)
@@ -66,14 +66,20 @@ chandlery/
     Dockerfile     #   FROM base; Hytale download/OAuth baked in; tag = version
     stop-hook      #   TBD from the server's shutdown semantics
     health         #   none unless a protocol probe turns up (TBD)
+  test/            # fixtures + tests, driven against real containers
   .github/workflows/
     <game>.yml     #   per-game: poll source version, rebuild+push on change
 ```
 
+There is no health-check dispatcher in the base. A game image that has a real
+probe declares its own `HEALTHCHECK`; one that doesn't declares none, and the
+indirection would have earned nothing.
+
 ### The base skeleton
 - **`tini`** as PID 1 (zombie reaping, clean signal forwarding).
 - **Entrypoint** execs the server, and on `SIGTERM` runs the game's **stop hook** (an in-band save+quit) and **waits** for a clean exit, bounded by `stop_grace_period`. This is the itzg/mc-server-runner idea, generalised behind a per-game hook.
-- **Non-root user**, world/config on a **`/data`** volume (so a container recreate keeps the world; the game *binaries* live in the image).
+- **Non-root user**, world/config on a **`/data`** volume (so a container recreate keeps the world; the game *binaries* live in the image). Started as root (`--user 0`, or a root-owned bind mount) the entrypoint adopts `/data` and drops to the game user, so the normal homelab case works without a chown dance.
+- **A console FIFO** wired to the server's stdin and held open for the container's lifetime, so a stop hook — or `docker exec … chandlery-console say hi` — can type at a running server without it seeing EOF.
 - **Health check only when we can beat the default.** An image gets a `HEALTHCHECK` *only* if the game gives us a probe that says more than "the port is open" — a protocol-level query that proves the server is actually answering players. Tidewaiter (and any other deployer) already does port-bound checks itself, so a port-bound `HEALTHCHECK` in the image adds a second copy of a check it already has, and a worse one: ours can't see the container's port mapping. When there's no better probe, ship no `HEALTHCHECK` and let the deployer's default do the job.
 
 ### Per-game source adapter (build time)

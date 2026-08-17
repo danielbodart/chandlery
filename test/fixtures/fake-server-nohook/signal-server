@@ -1,0 +1,5 @@
+#!/bin/sh
+# The easy kind of server: saves and exits on SIGTERM all by itself.
+trap 'echo "signal-server: saving on SIGTERM"; exit 0' TERM
+echo "signal-server: listening"
+while :; do sleep 1; done

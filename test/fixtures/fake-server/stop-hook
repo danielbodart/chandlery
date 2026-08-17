@@ -1,0 +1,4 @@
+#!/bin/sh
+# argv[1] is the server pid, which we do not need: this server stops in band.
+set -eu
+chandlery-console stop
