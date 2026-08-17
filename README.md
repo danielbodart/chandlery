@@ -13,9 +13,11 @@ First three games: **Minecraft Bedrock**, **Valheim**, **Hytale** — a common `
 
 ## The fleet
 
-Chandlery is the **build** half of a hands-off homelab: it turns each game release into a versioned image. Its sibling [**tidewaiter**](https://github.com/danielbodart/tidewaiter) is the **deploy** half — it swaps a running container for a newer image *only when the server is idle*, health-gated, with rollback. Chandlery images ship with Tidewaiter's labels so the loop closes:
+Chandlery is the **build** half of a hands-off homelab: it turns each game release into a versioned image. Its sibling [**tidewaiter**](https://github.com/danielbodart/tidewaiter) is the **deploy** half — it swaps a running container for a newer image *only when the server is idle*, health-gated, with rollback. The loop closes:
 
 > upstream game release → CI rebuilds `image = version` → Tidewaiter deploys it when the tide's out.
+
+The two stay decoupled, though: Chandlery does **not** bake Tidewaiter labels into its images. Auto-update policy belongs to whoever is deploying, so it lives in their compose file — we document the labels and ship an example compose instead. What the images *do* provide is a real `HEALTHCHECK`, which is what a deployer actually needs to gate a swap.
 
 Both sit beside [**portical**](https://github.com/danielbodart/portical) in the harbour.
 

@@ -16,7 +16,7 @@ A mono-repo of **clean-room, Docker-native game-server images**, where the **ima
 
 First three games: **Minecraft Bedrock**, **Valheim**, **Hytale**. Structured so more slot in via a small per-game adapter.
 
-This is the **build** half of the fleet; its sibling [`tidewaiter`](https://github.com/danielbodart/tidewaiter) is the **deploy** half — it watches these images and swaps a running container for a newer one *when the server is idle*, health-gated, with rollback. Chandlery images therefore ship with Tidewaiter's labels so the loop closes end to end. (Both sit beside [`portical`](https://github.com/danielbodart/portical) in the harbour.)
+This is the **build** half of the fleet; its sibling [`tidewaiter`](https://github.com/danielbodart/tidewaiter) is the **deploy** half — it watches these images and swaps a running container for a newer one *when the server is idle*, health-gated, with rollback. The loop closes end to end, but the two stay decoupled: Chandlery does **not** bake Tidewaiter labels into its images — deploy policy lives in the deployer's compose file (see §5). (Both sit beside [`portical`](https://github.com/danielbodart/portical) in the harbour.)
 
 ---
 
@@ -75,7 +75,6 @@ chandlery/
 - **Entrypoint** execs the server, and on `SIGTERM` runs the game's **stop hook** (an in-band save+quit) and **waits** for a clean exit, bounded by `stop_grace_period`. This is the itzg/mc-server-runner idea, generalised behind a per-game hook.
 - **Non-root user**, world/config on a **`/data`** volume (so a container recreate keeps the world; the game *binaries* live in the image).
 - **Health check** dispatches to the game's probe; default to a generic **port-bound / TCP-connect** check when no protocol probe exists (mirrors Tidewaiter's health ladder).
-- Carries default **Tidewaiter labels** (see §5).
 
 ### Per-game source adapter (build time)
 Each game's Dockerfile does one job at build: **install the exact version and bake it in**.
@@ -96,9 +95,11 @@ Then Tidewaiter (running on the host) sees the new `:latest` digest and, when th
 
 ---
 
-## 5. Tidewaiter integration (labels the images ship with)
+## 5. Tidewaiter integration (deploy-side config, not baked in)
 
-Each image sets sensible defaults so a deployer gets safe auto-update for free (overridable in compose):
+Chandlery images carry **no Tidewaiter labels**. Auto-update policy is a deployment decision — which host, which games may swap unattended, how idle counts as idle — and it changes without the image changing. Baking it in would make Chandlery images opinionated about a deployer they shouldn't depend on, and would mean rebuilding an image just to change a policy. So the images stay plain: build artefacts that any deployer (Tidewaiter, Watchtower, a human, nothing at all) can consume.
+
+Instead we **document** the labels alongside each game, and ship an example compose file that sets them. Recommended starting point:
 
 | Label | Bedrock | Valheim | Hytale |
 | --- | --- | --- | --- |
@@ -107,6 +108,8 @@ Each image sets sensible defaults so a deployer gets safe auto-update for free (
 | `tidewaiter.health` | `docker,port-bound` | `docker,port-bound` | `port-bound` |
 
 (Bedrock/Valheim are UDP, so conntrack is the detector that can see players — see the tidewaiter plan.)
+
+Note the `docker` health source above still works: it reads the image's own `HEALTHCHECK`, which Chandlery *does* provide (§3). That's the real integration point — a genuine health check in the image — and it needs no labels.
 
 ---
 
@@ -136,10 +139,10 @@ Set a generous `stop_grace_period` in the shipped compose so a large world save 
 3. **Bedrock CI**: rebuild-on-Mojang-release, tag=version, push.
 4. **Valheim**: SteamCMD adapter (896660), SIGINT stop, A2S health, CI on buildid.
 5. **Hytale**: resolve auth (§7); if bake-able, adapter + CI; else document why it stays runtime-download.
-6. **Ship + adopt**: publish images, wire Tidewaiter labels, migrate the homelab (`danielbodart/server`) off LinuxGSM one game at a time.
+6. **Ship + adopt**: publish images, ship an example compose showing the Tidewaiter labels (set deploy-side, not baked — §5), migrate the homelab (`danielbodart/server`) off LinuxGSM one game at a time.
 
 ## 9. Non-goals (v1)
 - No mod/plugin management surface (that's itzg's turf for Java — we're not doing Minecraft Java here; itzg stays for Java).
 - No panel/UI.
 - No multi-host orchestration.
-- Chandlery builds & bakes images; it does **not** update running containers — that's Tidewaiter.
+- Chandlery builds & bakes images; it does **not** update running containers — that's Tidewaiter. Nor does it bake Tidewaiter labels: deploy policy is the deployer's, set in compose (§5).
