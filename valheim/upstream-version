@@ -1,0 +1,34 @@
+#!/bin/sh
+# Print the build id of Valheim Dedicated Server's public branch.
+#
+# Steam has no "version" for a dedicated server, only a build id, so that is
+# what the image tag is: chandlery/valheim:21981590 is exactly that build.
+#
+# api.steamcmd.net is the fast path — one HTTP call instead of running
+# SteamCMD. Pass --canonical to ask Steam itself, which is slower but is the
+# source of truth; CI uses the fast path and the build validates against Steam
+# anyway by downloading from it.
+set -eu
+
+APP_ID="${VALHEIM_APP_ID:-896660}"
+BRANCH="${VALHEIM_BRANCH:-public}"
+
+if [ "${1:-}" = "--canonical" ]; then
+    command -v steamcmd >/dev/null 2>&1 || { echo "steamcmd not installed" >&2; exit 69; }
+    steamcmd +login anonymous +app_info_update 1 +app_info_print "$APP_ID" +quit \
+        | awk -v b="$BRANCH" '
+            $1 == "\"branches\"" { in_branches = 1 }
+            in_branches && $1 == "\"" b "\"" { in_branch = 1 }
+            in_branch && $1 == "\"buildid\"" { gsub(/"/, "", $2); print $2; exit }'
+    exit 0
+fi
+
+buildid=$(curl -fsS --max-time 30 "https://api.steamcmd.net/v1/info/${APP_ID}" \
+          | jq -r --arg b "$BRANCH" '.data[].depots.branches[$b].buildid')
+
+case "$buildid" in
+    ''|null) echo "no $BRANCH buildid for app $APP_ID" >&2; exit 1 ;;
+    *[!0-9]*) echo "unrecognised buildid [$buildid]" >&2; exit 1 ;;
+esac
+
+printf '%s\n' "$buildid"

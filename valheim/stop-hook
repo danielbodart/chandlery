@@ -1,0 +1,8 @@
+#!/bin/sh
+# Valheim saves the world when it is interrupted, and only then. Killed any
+# other way it loses everything since the last autosave, which is the failure
+# this whole project exists to avoid.
+#
+# SIGINT rather than SIGTERM: it is what the server installs a handler for.
+set -eu
+kill -INT "$1"

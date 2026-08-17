@@ -85,7 +85,7 @@ indirection would have earned nothing.
 ### Per-game source adapter (build time)
 Each game's Dockerfile does one job at build: **install the exact version and bake it in**.
 - **Bedrock** — download Mojang's Bedrock dedicated-server zip for a given version, unzip into the image. **Measured, 1.26.44.3:** the ≈311 MB debug-symbols file this plan expected is no longer shipped; what remains to drop is `libMinecraft.Server.Lib.a` (8 MB, for linking against the server, not running it). The zip is 104 MB, 348 MB unpacked, and the finished image is **624 MB** against LinuxGSM's 1.17 GB. The 230 MB `bedrock_server` binary sits in its own layer above the packs, so a version bump re-pulls the binary and reuses the assets.
-- **Valheim** — `steamcmd +login anonymous +app_update 896660 +quit` at build; bake the result.
+- **Valheim** — `steamcmd +login anonymous +app_update 896660 validate +quit` at build; bake the result. `validate` makes SteamCMD checksum every file it wrote, which is the nearest thing to a verified artefact Steam offers. The build then re-reads the build id out of `appmanifest_896660.acf` and fails if Steam served a different build from the one asked for. Unlike Bedrock, Valheim takes `-savedir`, so the world simply lives on `/data` with no symlinks.
 - **Hytale** — bake the downloaded server; auth is the open question (its download needs OAuth — see §7).
 
 ---
@@ -117,7 +117,7 @@ So the images stay plain: build artefacts any deployer (Tidewaiter, Watchtower, 
 | Game | Stop (save before exit) | `HEALTHCHECK` in the image? |
 | --- | --- | --- |
 | **Bedrock** | write `stop` to server stdin via a FIFO, wait for exit (BDS does not save cleanly on a bare SIGTERM) | **Yes** — RakNet unconnected-ping via `mc-monitor status-bedrock`; the MOTD reply proves the server is answering |
-| **Valheim** | forward `SIGINT`/`SIGTERM` (Valheim saves the world on signal) and wait | **Yes** — Steam `A2S_INFO` query, same reasoning |
+| **Valheim** | forward `SIGINT` and wait (that is the signal it saves on) | **Yes** — Steam `A2S_INFO` via `chandlery-a2s`, written here: no equivalent single-purpose binary exists, and it handles the challenge/response modern Steam servers require |
 | **Hytale** | TBD — determine the server's clean-shutdown command/signal | **No** (for now) — no protocol probe known; port-bound is all we'd have, and the deployer already does that. Add one if a real probe turns up |
 
 The rule for the third column: **add a `HEALTHCHECK` only when we can do better than the deployer's default.** A port-bound check is the default everywhere, so repeating it in the image buys nothing.
@@ -138,6 +138,26 @@ which sends you hunting a port conflict that does not exist. Hosts booted with
 prepare hook now pre-flights this and says what is actually wrong. Worth
 carrying into the homelab's compose: the Bedrock containers need IPv6 in their
 network.
+
+---
+
+### What could not be verified in the build sandbox
+
+Both games' *live* behaviour is unproven here, for one shared reason: the
+development sandbox's kernel has IPv6 disabled outright.
+
+- **Bedrock** binds an IPv6 socket unconditionally and exits without one, so
+  BDS has never actually been started. Everything around it is tested — the
+  bake, the layout, the health probe against a fake RakNet responder — but the
+  first real run is still ahead.
+- **Valheim** cannot even be *built* there: SteamCMD fails with
+  `EAFNOSUPPORT` creating its IPv6 socket, so the download never begins. The
+  adapter is tested instead against a fake server carrying the real scripts
+  (password checks, argument assembly, the SIGINT stop, the A2S probe), which
+  covers everything except SteamCMD itself.
+
+Neither is expected to affect a normal host; both want a real run before the
+homelab migration in §8.6.
 
 ---
 

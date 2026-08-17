@@ -11,14 +11,17 @@ BUILD_SECRETS = $(if $(EXTRA_CA),--secret id=extra-ca$(comma)src=$(EXTRA_CA),)
 comma := ,
 
 # Default to whatever upstream ships right now. Pass BEDROCK_VERSION to pin.
-BEDROCK_VERSION ?= $(shell ./bedrock/upstream-version)
+BEDROCK_VERSION  ?= $(shell ./bedrock/upstream-version)
+VALHEIM_BUILD_ID ?= $(shell ./valheim/upstream-version)
 
-.PHONY: help base bedrock test test-base test-bedrock clean
+.PHONY: help base bedrock valheim fake-valheim test test-base test-bedrock test-valheim test-valheim-adapter clean
 
 help:
 	@echo "make base        build the skeleton image"
 	@echo "make bedrock     build Bedrock ($(BEDROCK_VERSION))"
+	@echo "make valheim     build Valheim ($(VALHEIM_BUILD_ID))"
 	@echo "make test        build everything and run the tests"
+	@echo "make test-valheim-adapter   Valheim's adapter, without the download"
 	@echo "make clean       remove the images these targets build"
 
 base:
@@ -34,6 +37,24 @@ test-bedrock: bedrock
 	  -t $(REGISTRY)/test-raknet-pong:$(TAG) test/fixtures/raknet-pong
 	BEDROCK_VERSION=$(BEDROCK_VERSION) ./test/bedrock_test.sh
 
+valheim: base
+	docker build $(BUILD_SECRETS) --build-arg BASE=$(REGISTRY)/base:$(TAG) \
+	  --build-arg VALHEIM_BUILD_ID=$(VALHEIM_BUILD_ID) \
+	  -t $(REGISTRY)/valheim:$(VALHEIM_BUILD_ID) -t $(REGISTRY)/valheim:$(TAG) valheim
+
+# The adapter — prepare checks, argument assembly, stop signal, health probe —
+# on a fake server, so it is testable without a 1 GB SteamCMD download.
+fake-valheim: base
+	docker build -f test/fixtures/fake-valheim/Dockerfile \
+	  --build-arg BASE=$(REGISTRY)/base:$(TAG) \
+	  -t $(REGISTRY)/test-fake-valheim:$(TAG) .
+
+test-valheim-adapter: fake-valheim
+	VALHEIM_BUILD_ID=$(VALHEIM_BUILD_ID) ./test/valheim_test.sh
+
+test-valheim: valheim fake-valheim
+	VALHEIM_BUILD_ID=$(VALHEIM_BUILD_ID) ./test/valheim_test.sh
+
 test-base: base
 	docker build --build-arg BASE=$(REGISTRY)/base:$(TAG) \
 	  -t $(REGISTRY)/test-fake-server:$(TAG) test/fixtures/fake-server
@@ -41,9 +62,11 @@ test-base: base
 	  -t $(REGISTRY)/test-signal-server:$(TAG) test/fixtures/fake-server-nohook
 	./test/base_test.sh
 
-test: test-base test-bedrock
+test: test-base test-bedrock test-valheim
 
 clean:
 	-docker rmi -f $(REGISTRY)/base:$(TAG) $(REGISTRY)/bedrock:$(TAG) \
 	  $(REGISTRY)/bedrock:$(BEDROCK_VERSION) \
-	  $(REGISTRY)/test-fake-server:$(TAG) $(REGISTRY)/test-signal-server:$(TAG)
+	  $(REGISTRY)/valheim:$(TAG) $(REGISTRY)/valheim:$(VALHEIM_BUILD_ID) \
+	  $(REGISTRY)/test-fake-server:$(TAG) $(REGISTRY)/test-signal-server:$(TAG) \
+	  $(REGISTRY)/test-raknet-pong:$(TAG) $(REGISTRY)/test-fake-valheim:$(TAG)

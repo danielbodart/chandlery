@@ -27,5 +27,10 @@ jobs:
       - name: Bedrock
         run: make test-bedrock
 
+      # The adapter only: a full Valheim build is a 1 GB SteamCMD download, and
+      # valheim.yml already does that whenever the game or these files change.
+      - name: Valheim adapter
+        run: make test-valheim-adapter
+
       - if: failure()
         run: docker ps -a

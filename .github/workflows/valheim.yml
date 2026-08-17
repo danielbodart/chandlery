@@ -1,0 +1,147 @@
+# Rebuild Valheim when Steam publishes a new build of the dedicated server.
+#
+# Steam has no version string for a dedicated server, so the tag is the public
+# branch's build id, and "has upstream moved" means "has that number changed".
+name: valheim
+
+on:
+  schedule:
+    - cron: '43 * * * *'
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: 'Build this exact build id instead of whatever is current'
+        required: false
+      force:
+        description: 'Rebuild even if the tag already exists'
+        type: boolean
+        default: false
+  push:
+    branches: [master]
+    paths:
+      - 'base/**'
+      - 'valheim/**'
+      - '.github/workflows/valheim.yml'
+
+concurrency:
+  group: valheim
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository }}/valheim
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      build_id: ${{ steps.upstream.outputs.build_id }}
+      needed: ${{ steps.built.outputs.needed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: upstream
+        name: Ask Steam what the public branch is on
+        run: |
+          build_id="${{ inputs.build_id }}"
+          [ -n "$build_id" ] || build_id="$(./valheim/upstream-version)"
+          echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
+          echo "Upstream Valheim build: $build_id"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: built
+        name: Skip builds already published
+        run: |
+          if [ "${{ inputs.force }}" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "Building regardless: forced, or the image definition changed."
+          elif docker buildx imagetools inspect "${IMAGE}:${{ steps.upstream.outputs.build_id }}" >/dev/null 2>&1; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "${IMAGE}:${{ steps.upstream.outputs.build_id }} already exists; nothing to do."
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "New build. Building."
+          fi
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.needed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # See bedrock.yml: Docker Hub needs credentials a workflow cannot invent,
+      # so it switches itself on once they exist.
+      - id: hub
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          BUILD_ID: ${{ needs.resolve.outputs.build_id }}
+        run: |
+          tags="${IMAGE}:${BUILD_ID}
+          ${IMAGE}:latest"
+          if [ -n "$DOCKERHUB_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            tags="$tags
+          docker.io/chandlery/valheim:${BUILD_ID}
+          docker.io/chandlery/valheim:latest"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Docker Hub push skipped: set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN to enable it."
+          fi
+          {
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        if: steps.hub.outputs.enabled == 'true'
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build the skeleton
+        uses: docker/build-push-action@v6
+        with:
+          context: base
+          platforms: linux/amd64
+          load: true
+          tags: chandlery/base:ci
+          cache-from: type=gha,scope=base
+          cache-to: type=gha,scope=base,mode=max
+
+      - name: Build and push Valheim
+        uses: docker/build-push-action@v6
+        with:
+          context: valheim
+          # The server is an x86-64 build; SteamCMD offers no ARM one.
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            BASE=chandlery/base:ci
+            VALHEIM_BUILD_ID=${{ needs.resolve.outputs.build_id }}
+          tags: ${{ steps.hub.outputs.tags }}
+          cache-from: type=gha,scope=valheim
+          cache-to: type=gha,scope=valheim,mode=max
+
+      - name: Say what shipped
+        run: |
+          echo "### Valheim build ${{ needs.resolve.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`${IMAGE}:${{ needs.resolve.outputs.build_id }}\`" >> "$GITHUB_STEP_SUMMARY"

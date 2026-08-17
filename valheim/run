@@ -1,0 +1,36 @@
+#!/bin/sh
+# Assemble the server's arguments from environment, then become the server.
+#
+# Valheim takes its whole configuration on the command line, so this is the
+# adapter between "docker run -e" and that. exec matters: the stop hook signals
+# this pid expecting to reach the server itself, not a shell holding its hand.
+set -eu
+
+: "${VALHEIM_NAME:=Chandlery}"
+: "${VALHEIM_WORLD:=Dedicated}"
+: "${VALHEIM_PORT:=2456}"
+: "${VALHEIM_PUBLIC:=1}"
+
+# Steam's client library looks up the *game's* app id, not the server's.
+export SteamAppId=892970
+export LD_LIBRARY_PATH="/opt/valheim/linux64:${LD_LIBRARY_PATH:-}"
+
+set -- ./valheim_server.x86_64 \
+    -nographics -batchmode \
+    -name "$VALHEIM_NAME" \
+    -port "$VALHEIM_PORT" \
+    -world "$VALHEIM_WORLD" \
+    -password "$VALHEIM_PASSWORD" \
+    -public "$VALHEIM_PUBLIC" \
+    -savedir /data
+
+# Valheim supports -savedir, so unlike Bedrock the world simply lives on the
+# volume and the game directory stays read-only in spirit.
+
+if [ -n "${VALHEIM_EXTRA_ARGS:-}" ]; then
+    # Deliberately unquoted: the point is to let the caller pass several flags.
+    # shellcheck disable=SC2086
+    set -- "$@" $VALHEIM_EXTRA_ARGS
+fi
+
+exec "$@"
