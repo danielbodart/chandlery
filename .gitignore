@@ -1,0 +1,9 @@
+*.log
+.env
+.env.*
+.DS_Store
+.claude/
+dist/
+# build scratch: downloaded server payloads should never be committed
+downloads/
+serverfiles/
