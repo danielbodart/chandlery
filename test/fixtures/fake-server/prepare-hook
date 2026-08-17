@@ -1,0 +1,5 @@
+#!/bin/sh
+# Seeds a marker so the test can see prepare ran before the server did.
+set -eu
+[ "${PREPARE_SHOULD_FAIL:-0}" = "0" ] || { echo "prepare: refusing"; exit 9; }
+echo "prepare: seeded"

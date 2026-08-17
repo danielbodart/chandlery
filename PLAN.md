@@ -84,7 +84,7 @@ indirection would have earned nothing.
 
 ### Per-game source adapter (build time)
 Each game's Dockerfile does one job at build: **install the exact version and bake it in**.
-- **Bedrock** — download Mojang's Bedrock dedicated-server zip for a given version, unzip into the image. Drop the debug-symbols file (≈311 MB) — huge and useless in prod. Result is *smaller* than the 1.17 GB LinuxGSM image.
+- **Bedrock** — download Mojang's Bedrock dedicated-server zip for a given version, unzip into the image. **Measured, 1.26.44.3:** the ≈311 MB debug-symbols file this plan expected is no longer shipped; what remains to drop is `libMinecraft.Server.Lib.a` (8 MB, for linking against the server, not running it). The zip is 104 MB, 348 MB unpacked, and the finished image is **624 MB** against LinuxGSM's 1.17 GB. The 230 MB `bedrock_server` binary sits in its own layer above the packs, so a version bump re-pulls the binary and reuses the assets.
 - **Valheim** — `steamcmd +login anonymous +app_update 896660 +quit` at build; bake the result.
 - **Hytale** — bake the downloaded server; auth is the open question (its download needs OAuth — see §7).
 
@@ -116,13 +116,28 @@ So the images stay plain: build artefacts any deployer (Tidewaiter, Watchtower, 
 
 | Game | Stop (save before exit) | `HEALTHCHECK` in the image? |
 | --- | --- | --- |
-| **Bedrock** | write `stop` to server stdin via a FIFO, wait for exit (BDS does not save cleanly on a bare SIGTERM) | **Yes** — RakNet unconnected-ping on the game port returns the MOTD, which proves the server is answering |
+| **Bedrock** | write `stop` to server stdin via a FIFO, wait for exit (BDS does not save cleanly on a bare SIGTERM) | **Yes** — RakNet unconnected-ping via `mc-monitor status-bedrock`; the MOTD reply proves the server is answering |
 | **Valheim** | forward `SIGINT`/`SIGTERM` (Valheim saves the world on signal) and wait | **Yes** — Steam `A2S_INFO` query, same reasoning |
 | **Hytale** | TBD — determine the server's clean-shutdown command/signal | **No** (for now) — no protocol probe known; port-bound is all we'd have, and the deployer already does that. Add one if a real probe turns up |
 
 The rule for the third column: **add a `HEALTHCHECK` only when we can do better than the deployer's default.** A port-bound check is the default everywhere, so repeating it in the image buys nothing.
 
 Set a generous `stop_grace_period` in the shipped compose so a large world save finishes before Docker sends SIGKILL.
+
+---
+
+### Bedrock needs IPv6, and lies about why
+
+Found while building: BDS binds an IPv6 socket unconditionally. In a container
+without IPv6 it fails and reports
+
+> `Port [19132] may be in use by another process`
+
+which sends you hunting a port conflict that does not exist. Hosts booted with
+`ipv6.disable=1`, and Docker networks without IPv6, both trigger it. The image's
+prepare hook now pre-flights this and says what is actually wrong. Worth
+carrying into the homelab's compose: the Bedrock containers need IPv6 in their
+network.
 
 ---
 

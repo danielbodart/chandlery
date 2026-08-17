@@ -87,4 +87,41 @@ if wait_for_log "$CONTAINER" "fake-server: listening"; then
 fi
 rm -rf "$world"
 
+it "runs the prepare hook before the server starts"
+cleanup
+docker run -d --name "$CONTAINER" "$HOOKED" >/dev/null
+if wait_for_log "$CONTAINER" "fake-server: listening"; then
+    logs=$(docker logs "$CONTAINER" 2>&1)
+    # Ordering matters: seeding /data after the server has read it is useless.
+    seeded=$(printf '%s' "$logs" | grep -n "prepare: seeded" | head -1 | cut -d: -f1)
+    started=$(printf '%s' "$logs" | grep -n "fake-server: listening" | head -1 | cut -d: -f1)
+    if [ "${seeded:-999}" -lt "${started:-0}" ]; then pass; else
+        fail "prepare did not run before the server (prepare line $seeded, server line $started)"
+    fi
+fi
+
+it "refuses to start the server when prepare fails"
+cleanup
+docker run -d --name "$CONTAINER" -e PREPARE_SHOULD_FAIL=1 "$HOOKED" >/dev/null
+sleep 3
+logs=$(docker logs "$CONTAINER" 2>&1)
+code=$(docker inspect -f '{{.State.ExitCode}}' "$CONTAINER")
+assert_contains "$logs" "prepare: refusing" \
+    && refute_contains "$logs" "fake-server: listening" \
+    && assert_equals "9" "$code" "should surface the hook's own status" \
+    && pass
+
+it "says what to do when /data is not writable"
+cleanup
+world=$(mktemp -d)
+chown 0:0 "$world"
+# Runs as the non-root user against a root-owned bind mount: the common
+# first-run mistake, and previously a silent one.
+out=$(docker run --rm -v "$world:/data" "$HOOKED" 2>&1 || true)
+assert_contains "$out" "/data is not writable" \
+    && assert_contains "$out" "chown -R 1000:1000" \
+    && refute_contains "$out" "fake-server: listening" \
+    && pass
+rm -rf "$world"
+
 summary "base skeleton"

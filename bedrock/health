@@ -1,0 +1,13 @@
+#!/bin/sh
+# A RakNet unconnected-ping. The server answers with its MOTD, player counts
+# and protocol version, which proves it is genuinely serving players and not
+# merely holding the port open — the distinction LinuxGSM's probe got wrong
+# and restarted a live server over every few minutes.
+set -eu
+
+port="${CHANDLERY_HEALTH_PORT:-}"
+if [ -z "$port" ]; then
+    port=$(sed -n 's/^[[:space:]]*server-port=\([0-9]*\).*/\1/p' /data/server.properties 2>/dev/null | tail -1)
+fi
+
+exec /usr/local/bin/mc-monitor status-bedrock -host 127.0.0.1 -port "${port:-19132}"

@@ -7,6 +7,10 @@
 # whole point: a bare SIGTERM kills some servers mid-write and loses the world.
 #
 # Contract with a game image:
+#   /usr/local/lib/chandlery/prepare optional executable, run as the game user
+#                                   before the server starts. Seeds /data with
+#                                   defaults, pre-flights anything that would
+#                                   otherwise fail obscurely. Non-zero aborts.
 #   /usr/local/lib/chandlery/stop   optional executable, argv[1] = server PID.
 #                                   Asks the server to save and quit. Should
 #                                   return promptly; we do the waiting.
@@ -16,6 +20,7 @@
 set -eu
 
 STOP_HOOK=/usr/local/lib/chandlery/stop
+PREPARE_HOOK=/usr/local/lib/chandlery/prepare
 RUNTIME_DIR="${CHANDLERY_RUNTIME_DIR:-/run/chandlery}"
 CHANDLERY_CONSOLE="$RUNTIME_DIR/console"
 export CHANDLERY_CONSOLE
@@ -34,6 +39,23 @@ if [ "$(id -u)" = 0 ] && [ "${CHANDLERY_DROP_PRIVS:-1}" = 1 ]; then
     log "running as root; adopting /data and dropping to $user ($uid:$gid)"
     chown "$uid:$gid" /data "$RUNTIME_DIR" 2>/dev/null || true
     exec setpriv --reuid "$uid" --regid "$gid" --clear-groups "$0" "$@"
+fi
+
+# A named volume inherits /data's ownership from the image and just works. A
+# bind mount does not: it arrives owned by whoever owns the host directory,
+# and the server cannot write its world. Say so, with the fix, rather than
+# letting the game fail later and less clearly.
+if [ ! -w /data ]; then
+    log "ERROR: /data is not writable by $(id -un) (uid $(id -u))."
+    log "ERROR: it is owned by uid $(stat -c '%u' /data 2>/dev/null || echo '?')."
+    log "ERROR: either chown it on the host:  chown -R $(id -u):$(id -g) <host dir>"
+    log "ERROR: or start the container as root once, and it will adopt /data itself."
+    exit 77
+fi
+
+if [ -x "$PREPARE_HOOK" ]; then
+    log "preparing"
+    "$PREPARE_HOOK" || { rc=$?; log "prepare hook failed (status $rc); refusing to start"; exit "$rc"; }
 fi
 
 mkdir -p "$RUNTIME_DIR"

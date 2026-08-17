@@ -1,0 +1,32 @@
+#!/bin/sh
+# Runs as the game user before BDS starts.
+#
+# BDS keeps its config next to its binaries and has no flag to point it
+# elsewhere, so the image symlinks the four stateful paths out to /data. Those
+# links dangle until this seeds the real files on first run.
+set -eu
+
+GAME_DIR=/opt/bedrock
+DEFAULTS="$GAME_DIR/.defaults"
+
+log() { printf '[bedrock] %s\n' "$*" >&2; }
+
+mkdir -p /data/worlds
+
+for f in server.properties allowlist.json permissions.json; do
+    if [ ! -e "/data/$f" ]; then
+        log "seeding /data/$f from the version shipped in this image"
+        cp "$DEFAULTS/$f" "/data/$f"
+    fi
+done
+
+# BDS binds an IPv6 socket unconditionally and, when it cannot, reports
+# "Port [19132] may be in use by another process" and exits — which sends you
+# hunting for a port conflict that does not exist. Say what is actually wrong.
+if [ ! -e /proc/net/if_inet6 ]; then
+    log "ERROR: no IPv6 in this container, and BDS requires it."
+    log "ERROR: it will exit claiming its ports are in use. They are not."
+    log "ERROR: enable IPv6 on the host (check for ipv6.disable=1 on the kernel"
+    log "ERROR: command line) and for this container's network."
+    exit 78
+fi

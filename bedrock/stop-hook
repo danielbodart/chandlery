@@ -1,0 +1,6 @@
+#!/bin/sh
+# BDS does not save on a bare SIGTERM: killed mid-tick it loses whatever was
+# not yet flushed. `stop` on the console is the supported shutdown, and it
+# saves the world first. argv[1] is the server pid; we do not need it.
+set -eu
+chandlery-console stop

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Print the version of Bedrock Dedicated Server that Mojang currently ships.
+#
+# The download-links API is the machine-readable source; the alternative is
+# scraping minecraft.net, which is what everyone else does and which breaks.
+set -eu
+
+API="${BEDROCK_LINKS_API:-https://net-secondary.web.minecraft-services.net/api/v1.0/download/links}"
+CHANNEL="${BEDROCK_CHANNEL:-serverBedrockLinux}"
+
+url=$(curl -fsS --max-time 30 "$API" \
+      | jq -r --arg c "$CHANNEL" '.result.links[] | select(.downloadType == $c) | .downloadUrl')
+
+[ -n "$url" ] && [ "$url" != "null" ] || { echo "no $CHANNEL link in $API" >&2; exit 1; }
+
+# .../bedrock-server-1.26.44.3.zip -> 1.26.44.3
+version=${url##*/bedrock-server-}
+version=${version%.zip}
+
+case "$version" in
+    [0-9]*.[0-9]*) ;;
+    *) echo "unrecognised version [$version] from [$url]" >&2; exit 1 ;;
+esac
+
+printf '%s\n' "$version"
