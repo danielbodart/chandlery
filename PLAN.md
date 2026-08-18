@@ -8,8 +8,11 @@ rotates the refresh token and writes it straight back to the secret via a GitHub
 App (its key never expires, so nothing is rotated by hand; GITHUB_TOKEN cannot
 write secrets), then builds and pushes — `chandlery/hytale:0.5.9` is on GHCR
 alongside Bedrock and Valheim. The JRE is pinned (`eclipse-temurin:25.0.3_9-jre`),
-like everything else. Two things still await a real run: the full ~1.5 GB build
-download+boot, and the clean-shutdown command (`stop` is the current best guess). Milestone 7 is the homelab migration. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
+like everything else. And it is now **proven end to end on a real host**: the
+first boot fetched the 1.5 GB build (sha256-verified), Java 25 booted it in
+offline mode (assets loaded, universe generated), and a `docker stop` drove the
+console `/stop` command to a clean save and exit 0. Nothing about Hytale is
+unverified any more. Milestone 7 is the homelab migration. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
 
 ---
 
@@ -147,7 +150,7 @@ So the images stay plain: build artefacts any deployer (Tidewaiter, Watchtower, 
 | --- | --- | --- |
 | **Bedrock** | write `stop` to server stdin via a FIFO, wait for exit (BDS does not save cleanly on a bare SIGTERM) | **Yes** — RakNet unconnected-ping via `mc-monitor status-bedrock`; the MOTD reply proves the server is answering |
 | **Valheim** | forward `SIGINT` and wait (that is the signal it saves on) | **Yes** — Steam `A2S_INFO` via `chandlery-a2s`, written here: no equivalent single-purpose binary exists, and it handles the challenge/response modern Steam servers require |
-| **Hytale** | TBD — determine the server's clean-shutdown command/signal | **No** (for now) — no protocol probe known; port-bound is all we'd have, and the deployer already does that. Add one if a real probe turns up. Blocked behind §7.1 regardless |
+| **Hytale** | write `/stop` to the console via the FIFO, wait for exit (verified on a live 0.5.9 server: it saves config and world, then exits 0; no SIGTERM handler) | **No** — no protocol probe ships in the box; port-bound is all we'd have, and the deployer already does that. Add one if a real probe turns up |
 
 The rule for the third column: **add a `HEALTHCHECK` only when we can do better than the deployer's default.** A port-bound check is the default everywhere, so repeating it in the image buys nothing.
 
@@ -336,7 +339,7 @@ The downloader ships unstripped with debug info, so this is not guesswork.
 | Server runtime auth | **Solved.** Token passthrough; the image carries no credentials. |
 | Downloading and version-checking | **Solved in principle.** One device login by hand, then a rotating refresh token in CI. We write the client; the CLI is optional. |
 | Publishing publicly | **Open, and not technical.** Redistribution of gated assets — ask before pushing to Docker Hub. |
-| Clean shutdown | **Open.** No documented stop command; needs establishing on a live server. |
+| Clean shutdown | **Solved.** The console `/stop` command saves and exits 0, verified on a live 0.5.9 server; the stop hook sends it on SIGTERM. |
 
 Recommendation: build it for a **private** registry, where only the last row
 blocks anything. Settle redistribution before any public push — and note it

@@ -9,7 +9,9 @@ echo "fake-hytale: listening"
 trap 'echo "fake-hytale: saving world"; echo "fake-hytale: shut down"; exit 0' TERM INT
 while IFS= read -r line; do
     echo "fake-hytale: console $line"
-    if [ "$line" = stop ]; then
+    # The real server's clean-shutdown console command is /stop (verified on a
+    # live 0.5.9 server); the stop hook sends exactly that.
+    if [ "$line" = "/stop" ]; then
         echo "fake-hytale: saving world"
         echo "fake-hytale: shut down"
         exit 0

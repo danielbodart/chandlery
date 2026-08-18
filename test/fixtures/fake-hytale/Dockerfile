@@ -13,8 +13,11 @@ FROM ${BASE}
 USER root
 
 ARG HYTALE_VERSION=0.0.0-fake
-RUN mkdir -p "/cache/hytale/${HYTALE_VERSION}/assets" \
- && : > "/cache/hytale/${HYTALE_VERSION}/server.jar" \
+# Mirror the real extracted layout: Server/HytaleServer.jar and Assets.zip next
+# to it, which is what hytale/run locates and points --assets at.
+RUN mkdir -p "/cache/hytale/${HYTALE_VERSION}/Server" \
+ && : > "/cache/hytale/${HYTALE_VERSION}/Server/HytaleServer.jar" \
+ && : > "/cache/hytale/${HYTALE_VERSION}/Assets.zip" \
  && : > "/cache/hytale/${HYTALE_VERSION}/.chandlery-ready" \
  && chown -R chandlery:chandlery /cache/hytale
 

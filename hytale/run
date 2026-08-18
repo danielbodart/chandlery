@@ -2,28 +2,39 @@
 # Become the Hytale server, from the version fetched to /cache by the prepare
 # hook. exec matters: the entrypoint wired the console FIFO to this process's
 # stdin, and the stop hook signals this pid.
+#
+# The official start.sh launches `java -jar Server/HytaleServer.jar
+# --assets ../Assets.zip --backup …` from inside the Server/ directory, looping
+# on exit code 8 to apply staged updates. We deliberately do NOT loop: the
+# updater is off (HYTALE_DISABLE_UPDATES), because a container that rewrites its
+# own binaries has stopped being the version on its tag (PLAN 7.1). We also run
+# with the working directory on /data, so the world, config, logs and backups
+# land on the volume rather than in the read-only game payload.
 set -eu
 
 : "${HYTALE_VERSION:?HYTALE_VERSION is not set}"
 game="${CHANDLERY_CACHE:-/cache}/hytale/$HYTALE_VERSION"
 
-jar=$(find "$game" -maxdepth 2 -name '*.jar' | head -1)
-[ -n "$jar" ] || {
-    echo "[hytale] no server jar in $game; did the prepare hook fetch it?" >&2
-    exit 70
-}
+jar="$game/Server/HytaleServer.jar"
+assets="$game/Assets.zip"
+[ -f "$jar" ]    || { echo "[hytale] no server jar at $jar; did the prepare hook fetch it?" >&2; exit 70; }
+[ -f "$assets" ] || { echo "[hytale] no Assets.zip at $assets" >&2; exit 70; }
 
-# The server writes universe/, logs/, config.json … relative to the working
-# directory; keep that on /data. --assets points back at the read-only payload.
+# The server writes universe/, config.json, logs/, backups/ relative to the
+# working directory; keep that on /data.
 cd /data
-assets="$game/assets"
-[ -d "$assets" ] || assets="$game"
 
 set -- java
-# A pre-trained AOT cache cuts boot time, when the download shipped one.
-aot=$(find "$game" -maxdepth 2 -name 'HytaleServer.aot' | head -1)
+# Custom JVM options (heap, GC) via /data/jvm.options, one flag per line — the
+# same @-file the official launcher reads, just from the volume.
+[ -f /data/jvm.options ] && set -- "$@" "@/data/jvm.options"
+# A pre-trained AOT cache would cut boot time; 0.5.9 ships none, but honour one
+# if a future build does.
+aot=$(find "$game" -maxdepth 3 -name 'HytaleServer.aot' 2>/dev/null | head -1)
 [ -n "$aot" ] && set -- "$@" "-XX:AOTCache=$aot"
-set -- "$@" -jar "$jar" --assets "$assets" --disable-sentry
+
+set -- "$@" -jar "$jar" --assets "$assets" --disable-sentry \
+    --backup --backup-dir /data/backups --backup-frequency 30
 
 # The server reads its session tokens from the environment itself, so online
 # mode passes nothing on the command line (argv is world-readable). Offline mode

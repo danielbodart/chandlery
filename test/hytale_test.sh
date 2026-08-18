@@ -69,7 +69,7 @@ if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
     docker stop --timeout 30 "$CONTAINER" >/dev/null
     logs=$(docker logs "$CONTAINER" 2>&1)
     code=$(docker inspect -f '{{.State.ExitCode}}' "$CONTAINER")
-    assert_contains "$logs" "fake-hytale: console stop" \
+    assert_contains "$logs" "fake-hytale: console /stop" \
         && assert_contains "$logs" "fake-hytale: saving world" \
         && assert_equals "0" "$code" "137 would mean it had to be killed" && pass
 fi

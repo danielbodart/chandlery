@@ -38,7 +38,8 @@ USER root
 RUN set -eux; \
     test -n "${HYTALE_VERSION}" || { echo "HYTALE_VERSION build-arg is required" >&2; exit 64; }; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl unzip; \
+# jq parses the version manifest and the signed-URL responses at fetch time.
+    apt-get install -y --no-install-recommends ca-certificates curl unzip jq; \
     rm -rf /var/lib/apt/lists/*
 
 # Java 25, from Temurin. The server needs a JRE; the game jar is fetched at start.
