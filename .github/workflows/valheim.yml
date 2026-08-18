@@ -80,17 +80,22 @@ jobs:
           EVENT: ${{ github.event_name }}
           BUILD_ID: ${{ steps.upstream.outputs.build_id }}
         run: |
-          # The tag is the game version, which we do not know without downloading,
-          # so the "already built?" check keys off a cheap build-<id> marker tag.
+          # The tag is the game version, which we do not know without downloading.
+          # So the "already built?" check reads the build id we recorded as a label
+          # on the published :latest — no extra marker tag needed.
           if [ "$FORCE" = "true" ] || [ "$EVENT" = "push" ]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
             echo "Building regardless: forced, or the image definition changed."
-          elif docker buildx imagetools inspect "${IMAGE}:build-${BUILD_ID}" >/dev/null 2>&1; then
-            echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "build ${BUILD_ID} already published; nothing to do."
           else
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "New build. Building."
+            published=$(docker buildx imagetools inspect "${IMAGE}:latest" \
+              --format '{{ index .Image.Config.Labels "dev.chandlery.valheim.build-id" }}' 2>/dev/null || echo "")
+            if [ "$published" = "$BUILD_ID" ]; then
+              echo "needed=false" >> "$GITHUB_OUTPUT"
+              echo "build ${BUILD_ID} already published (latest's build-id label); nothing to do."
+            else
+              echo "needed=true" >> "$GITHUB_OUTPUT"
+              echo "New build (${published:-none} -> ${BUILD_ID}). Building."
+            fi
           fi
 
   build:
@@ -151,10 +156,10 @@ jobs:
             --build-arg VALHEIM_VERSION="$version" \
             --build-arg VALHEIM_BUILD_ID="$BUILD_ID" \
             --build-arg VALHEIM_MANIFEST_GID="$MANIFEST_GID" \
-            -t "${IMAGE}:${version}" -t "${IMAGE}:latest" -t "${IMAGE}:build-${BUILD_ID}" valheim
+            -t "${IMAGE}:${version}" -t "${IMAGE}:latest" valheim
+          # Push :latest last so the registry's default view lands on it.
           docker push "${IMAGE}:${version}"
           docker push "${IMAGE}:latest"
-          docker push "${IMAGE}:build-${BUILD_ID}"
 
           {
             echo "### Valheim ${version}"
