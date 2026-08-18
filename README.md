@@ -7,7 +7,7 @@
 
 > A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game.
 
-Status: **early**. Minecraft Bedrock and Valheim are built, tested, and now *pin-and-verify* rather than baking the game in: the image records which version and fetches it from upstream on first start, verified, onto a `/cache` volume (see [PLAN.md §7.3](./PLAN.md)). Bedrock is proven end to end against a real download; Valheim's SteamCMD fetch wants a first real run on the homelab. Nothing is published to a registry yet.
+Status: **all three games — Minecraft Bedrock, Valheim, Hytale — are built, proven on a real host, and publishing to GHCR** (`chandlery/bedrock:1.26.44.3`, `chandlery/valheim:0.221.12`, `chandlery/hytale:0.5.9`). The images *pin-and-verify* rather than baking the game in: each records exactly which version and fetches it from upstream on first start, verified, onto a `/cache` volume (see [PLAN.md §7.3](./PLAN.md)). Release CI rebuilds each on upstream release. Remaining: migrating the homelab off LinuxGSM.
 
 ## Running one
 
@@ -18,19 +18,21 @@ $ docker run -d --name bedrock -p 19132:19132/udp -v bedrock-data:/data \
 
 There is a fuller [example compose file](./examples/compose.yaml) with both games, sensible stop grace periods, and the IPv6 network Bedrock insists on.
 
-| | Bedrock | Valheim |
-| --- | --- | --- |
-| Tag is | the Mojang version | the Steam build id |
-| Stops by | `stop` on the server console | `SIGINT` |
-| Health check | RakNet ping ([mc-monitor](https://github.com/itzg/mc-monitor)) | Steam `A2S_INFO` |
-| Ports | 19132/udp | 2456/udp, 2457/udp (query) |
-| Config | `/data/server.properties` | `VALHEIM_*` environment variables |
-| Pinned by | versioned URL + sha256 | depot + manifest gid |
+| | Bedrock | Valheim | Hytale |
+| --- | --- | --- | --- |
+| Tag is | the Mojang version | the game version (0.221.12) | the game version (0.5.9) |
+| Stops by | `stop` on the console | `SIGINT` | `/stop` on the console |
+| Health check | RakNet ping ([mc-monitor](https://github.com/itzg/mc-monitor)) | Steam `A2S_INFO` | none (no in-box probe) |
+| Ports | 19132/udp | 2456/udp, 2457/udp (query) | 5520/udp (QUIC) |
+| Config | `/data/server.properties` | `VALHEIM_*` env | `HYTALE_*` env |
+| Pinned by | versioned URL + sha256 | depot + manifest gid | version + patchline (+ sha256) |
+| Needs a credential | no | a licensed Steam account | a Hytale downloader token |
 
-Two things worth knowing before the first run:
+A few things worth knowing before the first run:
 
 - **`/data` on a bind mount must be yours.** A named volume just works. A bind mount arrives owned by whoever owns the host directory — `chown 1000:1000` it, or start the container once as root and it will adopt it. Either way it says so rather than failing quietly.
 - **Bedrock wants a kernel with IPv6 support** — not IPv6 connectivity. An IPv4-only host is fine. It only matters if IPv6 is disabled outright (`ipv6.disable=1`), where BDS exits complaining its ports are in use when they are not; the image warns about that case.
+- **Valheim and Hytale need your own credential** to fetch, because a public image cannot carry the game bytes. Valheim: a Steam account that owns Valheim, its DepotDownloader token mounted as a secret (`STEAM_USERNAME` + `/run/secrets/steam-login`). Hytale: a downloader OAuth token. Bedrock needs nothing. See the [example compose](./examples/compose.yaml) and [PLAN.md §7.3](./PLAN.md).
 
 Talk to a running server with `docker exec chandlery-bedrock chandlery-console say hello`.
 
@@ -38,7 +40,7 @@ Talk to a running server with `docker exec chandlery-bedrock chandlery-console s
 
 Because otherwise the image tag tells you nothing. Existing images take the version as a runtime environment variable, so the same tag runs different software on different days, and "roll back" is not an operation you can perform.
 
-Chandlery bakes the version — and its checksum — at build time, and the container fetches exactly that from upstream on first start or refuses to run. So `:1.26.44.3` is a fact rather than a hope, and rolling back is an ordinary Docker operation.
+Chandlery pins the version — and its checksum — in the image at build time, and the container fetches exactly that from upstream on first start or refuses to run. So `:1.26.44.3` is a fact rather than a hope, and rolling back is an ordinary Docker operation.
 
 The images deliberately carry **no game content**: Mojang's EULA and the Steam Subscriber Agreement both prohibit redistributing it, which is why every other image downloads at runtime too. The difference is that ours still knows which version it is.
 
@@ -67,7 +69,7 @@ $ make help        # the other targets
 
 The tests drive actual containers, and the fixtures are built to fail honestly: the fake Bedrock server ignores `SIGTERM` and only saves when told `stop` on its console, and the fake Valheim server ignores `SIGTERM` and saves only on `SIGINT`. Wire the stop hook up wrongly and you get a killed container, not a passing test.
 
-`make test-valheim-adapter` covers Valheim's prepare checks, argument assembly, stop signal and health probe without the 1 GB SteamCMD download.
+`make test-valheim-adapter` covers Valheim's prepare checks, argument assembly, stop signal and health probe without the 1.6 GB download.
 
 ## License
 

@@ -1,18 +1,16 @@
 # Chandlery — design & build plan
 
-> A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game — baked into an image, versioned, ready to sail.
+> A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game — pinned to an exact version in the image, fetched and verified on first start, ready to sail.
 
-Status: **building**. Milestones 1-4 are done and tested (skeleton, Bedrock, its CI, Valheim), and milestone 6 — converting Bedrock and Valheim from baking to **pin-and-verify** (§7.3) — is done: both now carry no game content, record which version, and fetch it onto a `/cache` volume on first start through a shared `chandlery-cache` helper in the base. Bedrock is proven end to end against a real Mojang download (fetch → sha256 verify → boot healthy → graceful stop → cache reuse → wrong-sha fails closed); Valheim's SteamCMD depot fetch is written and adapter-tested but wants a first real run on a machine with an unthrottled connection (§7.4). Milestone 5 (Hytale) is now built too: image (Temurin 25, auto-updater disabled, no game content) and adapter (token-passthrough runtime auth, offline mode, console stop), tested offline against a fake server. The download flow is **fully mapped and verified** against the official downloader's live traffic (§7.1): a Cloudflare-R2 signing proxy at `account-data.hytale.com/game-assets/…`, a version manifest carrying `{version, download_url, sha256}`, so Hytale gets a real sha256 pin like Bedrock. `tools/hytale-token` mints and rotates the downloader token on demand. The
-`hytale.yml` release workflow is **live**: it detects the version (authenticated),
-rotates the refresh token and writes it straight back to the secret via a GitHub
-App (its key never expires, so nothing is rotated by hand; GITHUB_TOKEN cannot
-write secrets), then builds and pushes — `chandlery/hytale:0.5.9` is on GHCR
-alongside Bedrock and Valheim. The JRE is pinned (`eclipse-temurin:25.0.3_9-jre`),
-like everything else. And it is now **proven end to end on a real host**: the
-first boot fetched the 1.5 GB build (sha256-verified), Java 25 booted it in
-offline mode (assets loaded, universe generated), and a `docker stop` drove the
-console `/stop` command to a clean save and exit 0. Nothing about Hytale is
-unverified any more. Milestone 7 is the homelab migration. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
+Status: **all three games built, proven on a real host, and publishing to GHCR.** The images are **pinned, not baked**: each records exactly which version and fetches those bytes from upstream on first start through a shared `chandlery-cache` helper (atomic, marker-last, fail-closed), so a public image redistributes no game content (§7.3). Where each game stands:
+
+- **Bedrock** — pins the Mojang URL + sha256. Proven end to end: fetch → sha256 verify → BDS boots healthy (RakNet probe) → graceful stop saves → cache reuse → wrong-sha fails closed. `chandlery/bedrock:1.26.44.3` on GHCR; hourly release CI.
+- **Valheim** — pins the depot manifest gid, fetched with **DepotDownloader** under the operator's own licensed Steam account (anonymous cannot download this depot, and rollback needs old manifests — both verified on a real host). The tag is the real **game version** (0.221.12), read by booting the server; build id and gid are labels. steamclient.so is kept current by SteamCMD (the depot's own is too old). Boots, connects to Steam, A2S-healthy, saves on SIGINT. CI reads the version and pushes `chandlery/valheim:<version>`.
+- **Hytale** — pins version + patchline; the operator's OAuth token fetches their entitled copy at start (token passthrough, no credentials in the image). Java 25 (Temurin, pinned), auto-updater disabled. The download flow is verified against the official downloader's live traffic (§7.1) — a Cloudflare-R2 signing proxy returning `{version, download_url, sha256}`, so Hytale gets a sha256 pin too. `hytale.yml` is live (authenticated version detect; refresh-token rotation written back via a GitHub App). Proven on a real host: 1.5 GB fetch → Java boots → console `/stop` saves → exit 0. `chandlery/hytale:0.5.9` on GHCR.
+
+The credential story is symmetric: Bedrock needs none; Valheim needs a Steam account token; Hytale needs a downloader token — each injected at runtime, none baked. `tools/hytale-token` mints/rotates Hytale's.
+
+**Remaining: milestone 7, the homelab migration** off LinuxGSM. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
 
 ---
 
@@ -25,11 +23,12 @@ A mono-repo of **clean-room, Docker-native game-server images**, where the **ima
 - The running lifecycle is plain Docker: `tini` as PID 1, a graceful stop that **saves before it exits**, a real health check, `restart` policy for crashes — no bespoke supervisor.
 
 The images ship **no game content**. That is a licensing constraint, not a design
-preference, and §7.3 explains it. The version is baked; the bytes are fetched
-from upstream on first start and checked against what was baked. The distinction
-that matters is against the runtime-download images this project was started to
-replace: there the version is an environment variable and the tag tells you
-nothing, so the same tag runs different software on different days.
+preference, and §7.3 explains it. The version is **pinned**; the bytes are fetched
+from upstream on first start and verified against that pin, which fails closed if
+they do not match. The distinction that matters is against the runtime-download
+images this project was started to replace: there the version is an environment
+variable and the tag tells you nothing, so the same tag runs different software on
+different days. Here the pin is cryptographic and the tag cannot lie.
 
 First three games: **Minecraft Bedrock**, **Valheim**, **Hytale**. Structured so more slot in via a small per-game adapter.
 
@@ -51,7 +50,8 @@ We run LinuxGSM today and its Docker images never felt native: the game is downl
 No one covers **Bedrock + Steam + Hytale** with **image = version + native lifecycle + rebuild-on-release**. The reason the field is fragmented is that these three games use **three different distribution mechanisms** — Mojang direct download, Steam/SteamCMD, Hytale OAuth — so each existing project specialises in one. Chandlery's answer is a **common skeleton + per-game source adapters**.
 
 ### Prior art to reference (house rule: look first, cite it)
-- **[docker-gameserver](https://github.com/GameServerManagers/docker-gameserver)** (LinuxGSM's own) — its Jinja-templated per-game Dockerfiles from one base is the *structure* to emulate. We take the structure but **bake at build time, not download at runtime**.
+- **[docker-gameserver](https://github.com/GameServerManagers/docker-gameserver)** (LinuxGSM's own) — its Jinja-templated per-game Dockerfiles from one base is the *structure* to emulate. We take the structure but **pin the version in the image** and fetch-verify on first start, rather than downloading whatever an env var names.
+- **[SteamRE/DepotDownloader](https://github.com/SteamRE/DepotDownloader)** — downloads a Steam depot by immutable manifest gid under a real account, with a portable token. This is how Valheim fetches (anonymous SteamCMD cannot, and it cannot pin old manifests for rollback).
 - **[itzg/mc-server-runner](https://github.com/itzg/mc-server-runner)** — the gold-standard graceful stop: PID 1 that wires the console and turns SIGTERM into an in-band `stop`, then waits. Reference (or reuse) for the Minecraft stop hook.
 - **[itzg/mc-monitor](https://github.com/itzg/mc-monitor)** — a reliable Minecraft status probe for the health check (the *right* answer to the LinuxGSM gamedig false-positive that caused the 3-minute restart loop).
 - **[cm2network](https://hub.docker.com/u/cm2network)** — the SteamCMD base-image pattern for Steam games.
@@ -68,18 +68,18 @@ Mono-repo layout (structure to confirm in build):
 ```
 chandlery/
   base/            # the shared skeleton image
-    Dockerfile     #   tini as PID 1, entrypoint framework, non-root user, /data
+    Dockerfile     #   tini as PID 1, entrypoint framework, non-root user, /data + /cache
     entrypoint.sh  #   runs the server; on SIGTERM runs the game's stop-hook, waits
     console.sh     #   chandlery-console: type a command at the running server
-  bedrock/
-    Dockerfile     #   FROM base; MOJANG download baked in; tag = version
-    stop-hook      #   write "stop" to the server's stdin (FIFO)
-    health         #   RakNet unconnected-ping
-  valheim/
-    Dockerfile     #   FROM base; steamcmd +app_update 896660 baked in; tag = buildid
-    stop-hook      #   forward SIGINT (Valheim saves on SIGINT/SIGTERM)
-    health         #   Steam A2S query
-  hytale/          # not written: blocked on the decision in 7.1
+    cache.sh       #   chandlery-cache: fetch a pinned payload to /cache once, atomically
+  bedrock/         # FROM base; pins Mojang URL + sha256; tag = version
+    fetch prepare run stop-hook health upstream-version
+  valheim/         # FROM base; pins depot manifest gid; tag = game version
+    fetch (DepotDownloader) run prepare stop-hook health game-version upstream-version probe/
+  hytale/          # FROM base; pins version + patchline; tag = version
+    fetch prepare run stop-hook upstream-version
+  tools/
+    hytale-token   #   mint/rotate the Hytale downloader token (host + CI)
   test/            # fixtures + tests, driven against real containers
   .github/workflows/
     <game>.yml     #   per-game: poll source version, rebuild+push on change
@@ -111,11 +111,15 @@ marker-last engine.
   no config-path flag, so its four stateful paths are seeded onto `/data` from
   the fetched tree, then symlinked out to it.
 - **Valheim** — the image pins the depot (896661) and the immutable **manifest
-  gid**, as image env. `fetch` runs `steamcmd +login anonymous +download_depot
-  896660 896661 <gid> +quit`; pinning the manifest (not the moving `public`
-  branch) is what makes the build *reproducible*. SteamCMD itself is baked (it is
-  Valve's freely-redistributable tool, not the game). Valheim takes `-savedir`,
-  so the world lives on `/data` with no symlinks.
+  gid**. Anonymous SteamCMD *cannot* download this depot ("No subscription"), so
+  `fetch` uses **DepotDownloader** under the operator's own licensed Steam account
+  (its portable token injected at runtime), downloading exactly that manifest.
+  Pinning the manifest is what makes **rollback** possible: an old gid still
+  fetches its exact bytes, verified on a real host. The tag is the real game
+  version (read by booting the server, since Steam only exposes a build id); build
+  id and gid are labels. SteamCMD is baked only for a *current* `steamclient.so`
+  (the depot's own is too old for the server's Steam init). Valheim takes
+  `-savedir`, so the world lives on `/data` with no symlinks.
 - **Hytale** — pins version + patchline; the operator's own OAuth token fetches
   their own entitled copy at start (§7.1, §7.3). No content in the image, so no
   redistribution question for it at all.
@@ -125,9 +129,9 @@ marker-last engine.
 ## 4. Rebuild-on-release (the "always current" bit)
 
 Per game, a **scheduled CI workflow** (hourly-ish):
-1. Resolve the **latest upstream version** — Bedrock: Mojang's version/download endpoint; Valheim: SteamCMD `public` buildid (api.steamcmd.net fast-path, `steamcmd` canonical); Hytale: its release/version source.
-2. Compare to the **last built** (the newest image tag, or a recorded marker).
-3. If changed: build the image with that version baked in, tag `:<version>` **and** `:latest`, push to Docker Hub + GHCR.
+1. Resolve the **latest upstream version** — Bedrock: Mojang's download-links endpoint; Valheim: the `public` branch build id + manifest gid from api.steamcmd.net; Hytale: the authenticated version manifest (`tools/hytale-token` for the token).
+2. Compare to the **last built** — the newest image tag, or a cheap marker (Valheim keys off a `build-<id>` tag, since its human tag is the game version it does not yet know).
+3. If changed: build the image pinning that version, tag `:<version>` **and** `:latest`, push to **GHCR** (public; §8 explains why GHCR alone). Valheim additionally downloads and boots the server to read its game version for the tag.
 
 Then Tidewaiter (running on the host) sees the new `:latest` digest and, when the server is empty, pulls + swaps + health-checks + (on failure) rolls back. **Upstream releases → CI rebuilds image=version → Tidewaiter deploys when idle.** Hands-off.
 
@@ -175,44 +179,52 @@ rather than refusing to start, since the message is the useful part.
 
 ---
 
-### What could not be verified in the build sandbox
+### What is proven, and where
 
-Both games' *live* behaviour is unproven here, for one shared reason: the
-development sandbox's kernel has IPv6 disabled outright.
+All three games have now been run for real on a normal host (an IPv6-capable
+desktop; the original build sandbox had IPv6 disabled, which is why earlier
+drafts of this section listed everything as unproven).
 
-- **Bedrock** opens an IPv6 socket and exits when the kernel has none, so BDS
-  has never actually been started there. This is a quirk of that sandbox, not a
-  requirement of Bedrock: it runs on the IPv4 homelab today. Everything around
-  it is tested — the layout, the health probe against a fake RakNet responder —
-  but the first real run under Chandlery is still ahead.
-- **Valheim** cannot even be *built* there: SteamCMD fails with
-  `EAFNOSUPPORT` creating its IPv6 socket, so the download never begins. The
-  adapter is tested instead against a fake server carrying the real scripts
-  (password checks, argument assembly, the SIGINT stop, the A2S probe), which
-  covers everything except SteamCMD itself.
+- **Bedrock** — fetched from Mojang against the pinned sha256, unzipped, BDS
+  booted (IPv4 and IPv6 sockets both bound), the RakNet HEALTHCHECK went healthy,
+  a `docker stop` drove the console `stop` to a clean save and exit 0, a restart
+  took the cache fast path, and a wrong sha256 failed closed leaving nothing on
+  `/cache`.
+- **Valheim** — the DepotDownloader fetch pulled both the current and an old
+  manifest (rollback), the server booted, connected to Steam (with a current
+  `steamclient.so` — the depot's own is too old), answered A2S (healthy), and
+  saved on SIGINT (exit 0). CI reads the game version by booting a staging server.
+- **Hytale** — the 1.5 GB build fetched (sha256-verified), Java 25 booted it in
+  offline mode, and `docker stop` → the console `/stop` saved and exited 0.
 
-Neither is expected to affect a normal host; both want a real run before the
-homelab migration in §8.6.
+The adapters are *also* covered by fake-server fixtures (password/token checks,
+argument assembly, the stop signal, the health probe) so the fast test suite
+needs no multi-gigabyte download. The one thing still ahead is the homelab
+migration itself (§8).
 
 ---
 
-## 7. Open questions (resolve in build)
-- **Hytale auth in CI** — investigated; see §7.1. It now needs a decision, not more investigation.
-- **Layering to keep updates small** — partly measured; see §7.2. What remains is one number, and the tool to get it is written.
-- **Steam auth** — public dedicated servers install via `login anonymous`; confirm none of ours need a real account.
-- **Base image choice** — alpine vs debian-slim per game (Bedrock's binary wants glibc → debian-slim; Steam games likewise). The base may need to be glibc, not musl.
-- **Version marker** for CI "did it change" — newest pushed tag vs a state file.
-- Do we generate per-game Dockerfiles from a template (docker-gameserver style) or hand-write three? Three is fine now; template if the count grows.
+## 7. Open questions — now mostly resolved
+- **Hytale auth in CI** — **resolved.** `hytale.yml` is live: device-login once, a rotating refresh token in CI, written back via a GitHub App (§7.1).
+- **Layering to keep updates small** — **moot.** Pin-not-carry means the images are tens of MB with no game-binary layers to be clever about (§7.2, §7.3).
+- **Steam auth** — **resolved, and the opposite of what this hoped.** Anonymous *cannot* `download_depot` this depot ("No subscription"), and rollback needs old manifests, so Valheim fetches with DepotDownloader under a real licensed account (§7.3).
+- **Base image choice** — **resolved.** debian-slim (glibc) throughout; Bedrock's binary and SteamCMD both want glibc.
+- **Version marker** for CI "did it change" — **resolved.** Newest pushed tag (Bedrock/Hytale), or a cheap `build-<id>` marker tag for Valheim, whose human tag is the game version it does not yet know.
+- **Template vs hand-write** — hand-written three; template only if the count grows.
 
-### 7.1 Hytale: the runtime is solved, the download is not
+### 7.1 Hytale: both the runtime and the download are solved
 
 Investigated against primary sources: the official downloader
 (`https://downloader.hytale.com/hytale-downloader.zip`, build `2026.05.13`, its
 `QUICKSTART.md` and actual flag set) and Hypixel's
 [Server Provider Authentication Guide](https://support.hytale.com/hc/en-us/articles/45328341414043-Server-Provider-Authentication-Guide).
+This section began as an open investigation; it is kept because the reasoning is
+useful, but the outcome is now **built and running** — `hytale.yml` ships
+`chandlery/hytale:0.5.9` and a real host runs it.
 
-**There are two separate OAuth flows. One is solved by design, the other is
-still a blocker — and it is not the one this plan expected.**
+**There are two separate OAuth flows, both solved.** The server's own session is
+token passthrough; the download is a device login once, then a rotating refresh
+token — and the download flow is now mapped against live traffic, not inferred.
 
 #### The server's own authentication: solved, and it suits us
 
@@ -337,19 +349,15 @@ The downloader ships unstripped with debug info, so this is not guesswork.
 | | Status |
 | --- | --- |
 | Server runtime auth | **Solved.** Token passthrough; the image carries no credentials. |
-| Downloading and version-checking | **Solved in principle.** One device login by hand, then a rotating refresh token in CI. We write the client; the CLI is optional. |
-| Publishing publicly | **Open, and not technical.** Redistribution of gated assets — ask before pushing to Docker Hub. |
+| Downloading and version-checking | **Solved and running.** One device login by hand, then a rotating refresh token in CI, written back via a GitHub App. We wrote the client; the CLI is not used. |
+| Publishing publicly | **Resolved by the same logic as the other two:** the image carries no game content (pin-not-carry), so there is nothing to redistribute — the operator's own token fetches their entitled copy at start. |
 | Clean shutdown | **Solved.** The console `/stop` command saves and exits 0, verified on a live 0.5.9 server; the stop hook sends it on SIGTERM. |
 
-Recommendation: build it for a **private** registry, where only the last row
-blocks anything. Settle redistribution before any public push — and note it
-applies to Bedrock and Valheim too.
-
-#### What the image looks like, once the download question is settled
+#### What the image looks like — as built
 
 From the
-[Server Manual](https://support.hytale.com/hc/en-us/articles/45326769420827-Hytale-Server-Manual).
-None of this is blocked; it is what to build when §7.1 is decided.
+[Server Manual](https://support.hytale.com/hc/en-us/articles/45326769420827-Hytale-Server-Manual);
+this is what the image does.
 
 **The server ships its own auto-updater, and we have to turn it off.** It polls
 hourly, stages a download, exits with code 8, and a wrapper script swaps the
@@ -501,21 +509,36 @@ before the server starts, and fetch-verify-extract is exactly what it is for.
 | game | what the image pins | how the bytes are fetched |
 | --- | --- | --- |
 | **Bedrock** | the versioned URL + **sha256** | plain HTTPS; old versions stay up (1.26.42.1 and 1.26.43.1 both still 200) |
-| **Valheim** | depot + **manifest gid**, e.g. `896661:962159520942340660` | `steamcmd +download_depot 896660 896661 <gid>` |
+| **Valheim** | depot + **manifest gid**, e.g. `896661:962159520942340660` | `DepotDownloader -depot 896661 -manifest <gid>` under a licensed Steam account |
 | **Hytale** | version + patchline | the operator's own OAuth token buys a signed URL at start |
 
-The Valheim entry corrects an earlier claim in this plan that Steam only serves
-"latest". `app_update` does follow the `public` branch, but branches are only
-pointers: content is addressed by **immutable depot manifests**, and depot
-`896661` is the Linux server. Pinning the manifest makes a Valheim build
-*reproducible* — the same tag fetches the same bytes — which the current
-`app_update`-then-verify approach cannot promise.
+Content on Steam is addressed by **immutable depot manifests** (depot `896661`
+is the Linux server); pinning the manifest makes a Valheim build *reproducible*
+and — crucially — makes **rollback** possible, since an old gid still fetches its
+exact bytes. Both were verified on a real host: DepotDownloader pulled the
+current manifest and a four-month-old one.
 
-Two things to verify on a real machine, neither testable in the build sandbox:
-`download_depot` against an anonymous login, and whether Valve retains old
-manifests long enough to matter. `api.steamcmd.net` reports only the *current*
-gid per branch, so **CI must record the gid it used**, alongside the buildid, on
-every build. Our own history then keeps every published image re-creatable.
+Two things this plan flagged to verify are now answered, and the first was a
+surprise:
+
+- **Anonymous cannot download this depot.** `steamcmd +login anonymous
+  +download_depot 896660 896661 <gid>` fails with *"missing license for depot
+  (No subscription)"*, even after `app_license_request`. `app_update` works
+  anonymously but only serves the *current* build, so it cannot pin an old
+  manifest — no rollback. So Valheim fetches with **DepotDownloader** under the
+  operator's own **licensed** account. Its login is a portable ~640-byte token
+  (no per-run 2FA, works across machines and CI — unlike a machine-bound SteamCMD
+  sentry), injected at runtime; the image carries none.
+- **Old manifests stay downloadable.** Iron Gate does not block them (Steam lets
+  developers, but they haven't), so rollback is real. `api.steamcmd.net` reports
+  only the *current* gid, so **CI records the gid it used** on every build; our
+  own history keeps every published image re-creatable.
+
+Two more Valheim facts this cost us on the way, both fixed: the depot's bundled
+`steamclient.so` is from 2022 and the current server rejects it ("Missing
+interface adapter for SteamGameServer015"), so SteamCMD supplies a current one
+at runtime; and the game version (the human tag) is a code constant with no
+static source, so CI reads it by booting the server.
 
 #### Hytale works under this model, today
 
@@ -531,20 +554,25 @@ the version manifest is authenticated (§7.1). That is an authenticated GET of a
 version number — no bytes, no redistribution — but it still means a rotating
 refresh token in CI, handled as §7.1 describes.
 
-#### Consequences for what is already built
+#### Consequences — now carried out
 
-- **The Bedrock and Valheim images bake, and must be converted.** They are the
-  private-registry design. Until converted, do not publish them.
-- **§7.2's layering question mostly evaporates.** A thin image is tens of
-  megabytes; there are no 76 MB binary layers to be clever about.
-  `tools/release-diff` stays useful for understanding upstream churn, but it no
-  longer gates anything.
-- **The registry decision gets easier** — see §8.
+- **Bedrock and Valheim were converted from baking to pin-and-fetch**, and all
+  three games publish to GHCR. This is what made them publishable at all.
+- **§7.2's layering question evaporated.** A thin image is tens of megabytes;
+  there are no game-binary layers to be clever about. `tools/release-diff` stays
+  useful for understanding upstream churn, but it no longer gates anything.
+- **The registry decision got easier** — GHCR only, public (§8).
 
 ---
 
 ## 8. Build order (milestones)
-1. **Base skeleton**: tini + entrypoint (stop-hook dispatch) + healthcheck dispatch + non-root + /data. A trivial "sleep server" proves stop/health wiring.
+
+**Milestones 1–6 are done** — all three games are built, pin-and-fetch, proven on
+a real host, and publishing to GHCR with live release CI. Milestone 7 (the homelab
+migration) is what remains. The steps below are the original plan; a few describe
+a "baked" intermediate that milestone 6 then converted.
+
+1. **Base skeleton**: tini + entrypoint (stop-hook dispatch) + non-root + /data + /cache. A trivial "sleep server" proves stop/health wiring.
 2. **Bedrock**: Mojang adapter (baked, drop symbols), stdin-`stop` hook, RakNet health. Replace the LinuxGSM Bedrock servers first (the ones we fought this month).
 3. **Bedrock CI**: rebuild-on-Mojang-release, tag=version, push.
 4. **Valheim**: SteamCMD adapter (896660), SIGINT stop, A2S health, CI on buildid.
