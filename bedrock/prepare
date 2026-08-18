@@ -1,24 +1,15 @@
 #!/bin/sh
 # Runs as the game user before BDS starts.
 #
-# BDS keeps its config next to its binaries and has no flag to point it
-# elsewhere, so the image symlinks the four stateful paths out to /data. Those
-# links dangle until this seeds the real files on first run.
+# Fetches the pinned version into /cache on first start (a no-op on every start
+# after), then wires BDS's stateful paths out to /data. BDS keeps its config
+# next to its binaries and has no flag to point it elsewhere, so the links go
+# the other way: the game dir points out at the volume.
 set -eu
-
-GAME_DIR=/opt/bedrock
-DEFAULTS="$GAME_DIR/.defaults"
 
 log() { printf '[bedrock] %s\n' "$*" >&2; }
 
-mkdir -p /data/worlds
-
-for f in server.properties allowlist.json permissions.json; do
-    if [ ! -e "/data/$f" ]; then
-        log "seeding /data/$f from the version shipped in this image"
-        cp "$DEFAULTS/$f" "/data/$f"
-    fi
-done
+: "${BEDROCK_VERSION:?BEDROCK_VERSION is not set; this image is misbuilt}"
 
 # BDS opens an IPv6 socket regardless of whether anything routes over it. That
 # is fine nearly everywhere — an IPv4-only host still has IPv6 *support* in the
@@ -33,3 +24,21 @@ if [ ! -e /proc/net/if_inet6 ]; then
     log "WARNING: ports are in use. They are not — check for ipv6.disable=1 on the"
     log "WARNING: host's kernel command line. IPv6 connectivity is NOT required."
 fi
+
+# First start fetches and verifies; later starts reuse what is on /cache.
+game=$(chandlery-cache bedrock "$BEDROCK_VERSION" /usr/local/lib/chandlery/fetch)
+
+mkdir -p /data/worlds
+
+# The four paths BDS treats as state live on /data. Seed them from the version
+# we just unpacked (the stock config Mojang ships), then replace them in the
+# game dir with links out to the volume. cp before ln: the first pass reads the
+# real file, later passes just re-point the link.
+for f in server.properties allowlist.json permissions.json; do
+    if [ ! -e "/data/$f" ]; then
+        log "seeding /data/$f from Bedrock $BEDROCK_VERSION"
+        cp "$game/$f" "/data/$f"
+    fi
+    ln -sfn "/data/$f" "$game/$f"
+done
+ln -sfn /data/worlds "$game/worlds"

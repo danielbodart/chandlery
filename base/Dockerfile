@@ -28,6 +28,7 @@ RUN set -eux; \
 
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/chandlery-entrypoint
 COPY --chmod=0755 console.sh    /usr/local/bin/chandlery-console
+COPY --chmod=0755 cache.sh      /usr/local/bin/chandlery-cache
 
 ENV CHANDLERY_USER=${CHANDLERY_USER}
 

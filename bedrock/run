@@ -1,0 +1,21 @@
+#!/bin/sh
+# Become BDS, from the version cached on /cache by the prepare hook.
+#
+# BDS reads its packs and dlopens its libraries relative to the working
+# directory, so we cd into the game dir and put it on the library path before
+# exec. exec matters: the entrypoint wired the console FIFO to this process's
+# stdin, and the stop hook signals this pid expecting to reach the server.
+set -eu
+
+: "${BEDROCK_VERSION:?BEDROCK_VERSION is not set}"
+game="${CHANDLERY_CACHE:-/cache}/bedrock/$BEDROCK_VERSION"
+
+[ -x "$game/bedrock_server" ] || {
+    echo "[bedrock] $BEDROCK_VERSION is not on /cache (no $game/bedrock_server);" >&2
+    echo "[bedrock] the prepare hook should have fetched it — did it run?" >&2
+    exit 70
+}
+
+cd "$game"
+export LD_LIBRARY_PATH=".:${LD_LIBRARY_PATH:-}"
+exec ./bedrock_server
