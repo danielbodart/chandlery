@@ -37,8 +37,8 @@ if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
         && assert_contains "$args" "-jar " && pass
 fi
 
-it "takes the cache fast path, needing no downloader token when already fetched"
-# prepare must not demand HYTALE_ACCESS_TOKEN when /cache already has the version.
+it "needs no downloader token at start — the game is baked"
+# prepare must not demand HYTALE_ACCESS_TOKEN: the fetch happened at build.
 run_fake -e HYTALE_AUTH_MODE=offline
 if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
     logs=$(docker logs "$CONTAINER" 2>&1)
@@ -84,18 +84,20 @@ fi
 
 inspect() { docker run --rm --entrypoint /bin/sh "$IMAGE" -c "$1"; }
 
-it "carries no game content — it pins the version, not the bytes"
-assert_equals "" "$(inspect 'find / -name "*.jar" -not -path "*/cache/*" 2>/dev/null | grep -v /opt/java/ || true')" && pass
+it "bakes the server jar and Assets.zip it names, at /opt/hytale"
+assert_equals "yes" "$(inspect '[ -f /opt/hytale/Server/HytaleServer.jar ] &&
+                                 [ -f /opt/hytale/Assets.zip ] && echo yes')" && pass
 
 it "records the version in its tag's label and environment"
 assert_equals "${HYTALE_VERSION:?set HYTALE_VERSION}" \
     "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE")" \
   && assert_equals "${HYTALE_VERSION}" "$(inspect 'echo "$HYTALE_VERSION"')" && pass
 
-it "ships Java and the fetch machinery, not a baked payload"
+it "ships Java, and needs no runtime fetch machinery"
 assert_equals "yes" "$(inspect '[ -x "$JAVA_HOME/bin/java" ] &&
-                                 [ -x /usr/local/lib/chandlery/fetch ] &&
-                                 [ -x /usr/local/bin/chandlery-cache ] && echo yes')" && pass
+                                 [ ! -e /usr/local/lib/chandlery/fetch ] &&
+                                 ! command -v curl >/dev/null 2>&1 &&
+                                 ! command -v jq >/dev/null 2>&1 && echo yes')" && pass
 
 it "disables the server's own auto-updater, so the tag stays honest"
 assert_equals "1" "$(inspect 'echo "$HYTALE_DISABLE_UPDATES"')" && pass

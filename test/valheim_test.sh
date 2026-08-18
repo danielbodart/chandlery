@@ -107,9 +107,8 @@ fi
 
 inspect() { docker run --rm --entrypoint /bin/sh "$IMAGE" -c "$1"; }
 
-it "carries no game content — it pins the build, not the bytes"
-# The whole point of the conversion: a public image may not redistribute Valheim.
-assert_equals "" "$(inspect 'find / -name valheim_server.x86_64 -not -path "*/cache/*" 2>/dev/null')" && pass
+it "bakes the server it names, executable, at /opt/valheim"
+assert_equals "yes" "$(inspect '[ -x /opt/valheim/valheim_server.x86_64 ] && echo yes')" && pass
 
 it "tags the image with the game version, and records the build id and gid"
 assert_equals "${VALHEIM_VERSION:?set VALHEIM_VERSION}" \
@@ -119,13 +118,15 @@ assert_equals "${VALHEIM_VERSION:?set VALHEIM_VERSION}" \
   && assert_equals "${VALHEIM_MANIFEST_GID:?set VALHEIM_MANIFEST_GID}" \
     "$(inspect 'echo "$VALHEIM_MANIFEST_GID"')" && pass
 
-it "ships DepotDownloader and SteamCMD, not a baked payload"
-# DepotDownloader does the authenticated, manifest-pinned download (rollback);
-# SteamCMD is only here for a current steamclient.so.
-assert_equals "yes" "$(inspect '[ -x /opt/depotdownloader/DepotDownloader ] &&
-                                 [ -x /opt/steamcmd/steamcmd.sh ] &&
-                                 [ -x /usr/local/lib/chandlery/fetch ] &&
-                                 [ -x /usr/local/bin/chandlery-cache ] && echo yes')" && pass
+it "bakes a current steamclient.so and needs no runtime fetch machinery"
+# Baked: DepotDownloader/SteamCMD did the fetch at build and do not ride into the
+# runtime image; a current steamclient.so is baked beside the server (the depot's
+# own is too old for the server's Steam init).
+assert_equals "yes" "$(inspect '[ -f /opt/valheim/steamclient.so ] &&
+                                 [ ! -e /opt/depotdownloader/DepotDownloader ] &&
+                                 [ ! -e /opt/steamcmd/steamcmd.sh ] &&
+                                 [ ! -e /usr/local/lib/chandlery/fetch ] &&
+                                 ! command -v curl >/dev/null 2>&1 && echo yes')" && pass
 
 it "ships the A2S probe its health check calls"
 assert_equals "yes" "$(inspect '[ -x /usr/local/bin/chandlery-a2s ] && echo yes')" && pass

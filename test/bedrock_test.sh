@@ -1,10 +1,9 @@
 #!/bin/sh
-# Bedrock image, pinned-not-baked. The checks that matter for "image = version"
-# now split in two: the image records *which* version (tag, label, env) and
-# carries none of it, and a first start fetches, verifies and lays it out. The
-# fetch/verify/boot path is proven end to end elsewhere against a real download;
-# here we drive the layout logic off a pre-seeded /cache so the suite stays fast
-# and needs no network.
+# Bedrock image, baked. "image = version" is now literal: the server the tag
+# names is in the image, split into a stable asset layer and the volatile
+# bedrock_server layer (bedrock/Dockerfile). These checks prove the layout the
+# image bakes and the adapter that runs it — no cache volume, no first-start
+# fetch, no network.
 set -eu
 cd "$(dirname "$0")"
 . ./lib.sh
@@ -13,69 +12,72 @@ IMAGE=chandlery/bedrock:test
 PONG_IMAGE=chandlery/test-raknet-pong:test
 VERSION="${BEDROCK_VERSION:?set BEDROCK_VERSION}"
 CONTAINER=chandlery-bedrock-test-$$
-CACHE_VOL=chandlery-bedrock-cache-$$
 DATA_VOL=chandlery-bedrock-data-$$
 
 cleanup() {
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
-    docker volume rm "$CACHE_VOL" "$DATA_VOL" >/dev/null 2>&1 || true
+    docker volume rm "$DATA_VOL" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
 
 # Run a shell in the image without starting a server.
 inspect() { docker run --rm --entrypoint /bin/sh "$IMAGE" -c "$1"; }
 
-# Lay a fake, ready Bedrock tree into a fresh cache volume, so chandlery-cache
-# takes its already-cached fast path and prepare runs its layout on top. This
-# stands in for a real fetch, which is proven separately.
-seed_cache() {
-    docker volume create "$CACHE_VOL" >/dev/null
-    docker volume create "$DATA_VOL" >/dev/null
-    docker run --rm -v "$CACHE_VOL:/cache" -v "$DATA_VOL:/data" alpine sh -c '
-        chown 1000:1000 /cache /data
-        d=/cache/bedrock/'"$VERSION"'
-        mkdir -p "$d"
-        printf "server-name=Chandlery\nserver-port=19132\n" > "$d/server.properties"
-        echo "{}" > "$d/allowlist.json"
-        echo "[]" > "$d/permissions.json"
-        printf "#!/bin/sh\necho READY-FAKE-BDS\nwhile read l; do [ \"\$l\" = stop ] && exit 0; done\n" > "$d/bedrock_server"
-        chmod +x "$d/bedrock_server"
-        : > "$d/.chandlery-ready"
-        chown -R 1000:1000 /cache/bedrock
-    '
-}
-
 echo "bedrock $VERSION"
 
-it "carries no game content — it pins the version, not the bytes"
-# The whole point of the conversion: a public image may not redistribute BDS.
-assert_equals "" "$(inspect 'ls /opt/bedrock 2>/dev/null; find / -name bedrock_server -not -path "*/cache/*" 2>/dev/null')" && pass
+it "bakes the server it names, executable, at /opt/bedrock"
+assert_equals "yes" "$(inspect '[ -x /opt/bedrock/bedrock_server ] && echo yes')" && pass
 
-it "records the version to fetch, in its tag's label and its environment"
+it "records the version in its tag's label and its environment"
 assert_equals "$VERSION" \
     "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE")" \
   && assert_equals "$VERSION" "$(inspect 'echo "$BEDROCK_VERSION"')" && pass
 
-it "ships the fetch/verify machinery, not a baked payload"
-assert_equals "yes" "$(inspect '[ -x /usr/local/lib/chandlery/fetch ] &&
-                                 [ -x /usr/local/bin/chandlery-cache ] &&
-                                 [ -x /usr/local/bin/bedrock-server ] && echo yes')" && pass
+it "ships the adapter and needs no runtime fetch machinery"
+# Baked: the fetch/cache path is gone; curl/unzip do not ride into the runtime.
+assert_equals "yes" "$(inspect '[ -x /usr/local/lib/chandlery/prepare ] &&
+                                 [ -x /usr/local/lib/chandlery/health ] &&
+                                 [ -x /usr/local/lib/chandlery/stop ] &&
+                                 [ -x /usr/local/bin/bedrock-server ] &&
+                                 [ ! -e /usr/local/lib/chandlery/fetch ] &&
+                                 ! command -v curl >/dev/null 2>&1 &&
+                                 ! command -v unzip >/dev/null 2>&1 && echo yes')" && pass
+
+it "drops the build-time leftovers the zip carries"
+assert_equals "yes" "$(inspect '[ ! -e /opt/bedrock/libMinecraft.Server.Lib.a ] &&
+                                 [ ! -e /opt/bedrock/bedrock_server_debug_symbols.debug ] && echo yes')" && pass
+
+it "puts bedrock_server in a layer of its own, above the bucketed assets"
+# The whole layering claim: the binary is the per-release delta, so it must not
+# share a layer with the assets that stay put, and the assets are split into
+# bucket layers that dedupe. docker history lists the binary COPY and the buckets.
+hist=$(docker history --no-trunc --format '{{.CreatedBy}}' "$IMAGE")
+buckets=$(printf '%s\n' "$hist" | grep -c '/buckets/[0-9]')
+assert_contains "$hist" "/opt/bedrock/bedrock_server" \
+  && [ "$buckets" -ge 8 ] \
+  && pass
+
+it "normalises baked mtimes to the build epoch, so unchanged assets dedupe"
+# A fresh mtime per release is what makes an identical asset tree re-pull; the
+# build stamps them all to SOURCE_DATE_EPOCH (0). Check the asset tree carries it.
+epochs=$(inspect 'find /opt/bedrock/resource_packs -type f -printf "%T@\n" | sort -u | head -5')
+assert_equals "0.0000000000" "$epochs" && pass
 
 it "declares a health check"
 assert_contains "$(docker inspect -f '{{json .Config.Healthcheck}}' "$IMAGE")" \
     "/usr/local/lib/chandlery/health" && pass
 
-it "fetches once, then reuses /cache on the next start"
-seed_cache
-out=$(docker run --rm -v "$CACHE_VOL:/cache" -v "$DATA_VOL:/data" \
-        --entrypoint /usr/local/lib/chandlery/prepare "$IMAGE" 2>&1 || true)
-assert_contains "$out" "already cached" && pass
-
-it "seeds /data from the cached version, and wires the game dir out to it"
-# prepare has run once above; check what it laid down.
-links=$(docker run --rm -v "$CACHE_VOL:/cache" alpine sh -c \
-    'cd /cache/bedrock/'"$VERSION"'; for f in server.properties allowlist.json permissions.json worlds; do
-         printf "%s->%s " "$f" "$(readlink "$f")"; done')
+it "seeds /data from the baked version, and wires the game dir out to it"
+docker volume create "$DATA_VOL" >/dev/null
+docker run --rm -v "$DATA_VOL:/data" alpine sh -c 'chown 1000:1000 /data'
+# The game dir is baked into the image, so prepare's symlinks live in this
+# container's writable layer only — run prepare and read them in one container.
+links=$(docker run --rm -v "$DATA_VOL:/data" --entrypoint /bin/sh "$IMAGE" -c '
+    /usr/local/lib/chandlery/prepare >/dev/null 2>&1 || true
+    cd /opt/bedrock
+    for f in server.properties allowlist.json permissions.json worlds; do
+        printf "%s->%s " "$f" "$(readlink "$f")"
+    done')
 assert_equals \
   "server.properties->/data/server.properties allowlist.json->/data/allowlist.json permissions.json->/data/permissions.json worlds->/data/worlds " \
   "$links" \
@@ -84,32 +86,17 @@ assert_equals \
 
 it "leaves an existing world's config alone on a later start"
 docker run --rm -v "$DATA_VOL:/data" alpine sh -c 'echo "server-name=Mine" > /data/server.properties'
-docker run --rm -v "$CACHE_VOL:/cache" -v "$DATA_VOL:/data" \
+docker run --rm -v "$DATA_VOL:/data" \
     --entrypoint /usr/local/lib/chandlery/prepare "$IMAGE" >/dev/null 2>&1 || true
 assert_equals "server-name=Mine" \
     "$(docker run --rm -v "$DATA_VOL:/data" alpine cat /data/server.properties)" && pass
-
-it "refuses to start when the download does not match the pinned sha256"
-# Fail closed: wrong bytes never run, and nothing partial is left on /cache.
-badcache=chandlery-bedrock-badcache-$$
-docker volume create "$badcache" >/dev/null
-if docker run --rm -v "$badcache:/cache" \
-      -e BEDROCK_URL="http://127.0.0.1:1/nope.zip" \
-      --entrypoint /usr/local/lib/chandlery/prepare "$IMAGE" >/dev/null 2>&1; then
-    fail "prepare succeeded despite an unreachable download"
-else
-    left=$(docker run --rm -v "$badcache:/cache" alpine sh -c 'find /cache/bedrock -mindepth 1 | wc -l')
-    assert_equals "0" "$left" "a failed fetch left something on /cache" && pass
-fi
-docker volume rm "$badcache" >/dev/null 2>&1 || true
 
 it "explains itself on a kernel with no IPv6 support"
 if [ -e /proc/net/if_inet6 ]; then
     printf 'skipped (this kernel has IPv6 support)\n'
     TESTS_RUN=$((TESTS_RUN - 1))
 else
-    # No cache: prepare warns about IPv6 before it ever reaches the fetch.
-    out=$(docker run --rm "$IMAGE" 2>&1 || true)
+    out=$(docker run --rm --entrypoint /usr/local/lib/chandlery/prepare "$IMAGE" 2>&1 || true)
     assert_contains "$out" "no IPv6 support at all" \
         && assert_contains "$out" "IPv6 connectivity is NOT required" && pass
 fi

@@ -1,14 +1,14 @@
 # Chandlery — design & build plan
 
-> A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game — pinned to an exact version in the image, fetched and verified on first start, ready to sail.
+> A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game — baked to an exact version in the image, layered so a version bump is a small pull, ready to sail.
 
-Status: **all three games built, proven on a real host, and publishing to GHCR.** The images are **pinned, not baked**: each records exactly which version and fetches those bytes from upstream on first start through a shared `chandlery-cache` helper (atomic, marker-last, fail-closed), so a public image redistributes no game content (§7.3). Where each game stands:
+Status: **all three games built and baked, proven on a real host.** The pivot (this session): the images now **bake the game at build**, layered by churn — the payload is split across bucket layers by a stable hash of each file's subtree with mtimes normalised, so an unchanged subtree is a byte-identical layer the registry dedupes across versions, and a version bump pulls only what changed (Bedrock measured: **76.9 MB of a 137 MB image**). The build still fetches and verifies (sha256 / manifest gid), so the pin stays cryptographic and the tag cannot lie; what changed is *where* the bytes live — in the image, not fetched on first start. Baking redistributes game content, which every licence here forbids for a **public** image (§7.3), so these images are for a **private registry**. The wins that bought the pivot: smaller effective pulls, real rollback (`docker pull <old tag>`, unchanged buckets already local), and a simpler runtime (no fetch tooling, no network, no first-boot download). Where each game stands:
 
-- **Bedrock** — pins the Mojang URL + sha256. Proven end to end: fetch → sha256 verify → BDS boots healthy (RakNet probe) → graceful stop saves → cache reuse → wrong-sha fails closed. `chandlery/bedrock:1.26.44.3` on GHCR; hourly release CI.
-- **Valheim** — pins the depot manifest gid, fetched with **DepotDownloader** under the operator's own licensed Steam account (anonymous cannot download this depot, and rollback needs old manifests — both verified on a real host). The tag is the real **game version** (0.221.12), read by booting the server; build id and gid are labels. steamclient.so is kept current by SteamCMD (the depot's own is too old). Boots, connects to Steam, A2S-healthy, saves on SIGINT. CI reads the version and pushes `chandlery/valheim:<version>`.
-- **Hytale** — pins version + patchline; the operator's OAuth token fetches their entitled copy at start (token passthrough, no credentials in the image). Java 25 (Temurin, pinned), auto-updater disabled. The download flow is verified against the official downloader's live traffic (§7.1) — a Cloudflare-R2 signing proxy returning `{version, download_url, sha256}`, so Hytale gets a sha256 pin too. `hytale.yml` is live (authenticated version detect; refresh-token rotation written back via a GitHub App). Proven on a real host: 1.5 GB fetch → Java boots → console `/stop` saves → exit 0. `chandlery/hytale:0.5.9` on GHCR.
+- **Bedrock** — bakes BDS at the pinned version, sha256-verified at build. The binary is the whole per-release delta (measured), so it is its own top layer above 16 mtime-normalised asset buckets. Real BDS boots baked; 13/13 tests green. Bump 76.9 MB (76.0 binary + 0.9 assets), 20/29 layers dedupe across 1.26.43.1 ↔ .44.3.
+- **Valheim** — the build fetches the pinned depot manifest with **DepotDownloader** (the operator's licensed Steam account, token a build secret) and bakes it; a current `steamclient.so` is baked from SteamCMD (the depot's own is too old). Boots baked — `steamclient.so` loads, Steam game server initialised; 15/15 tests green. `chandlery/valheim:test` 3.31 GB, split across buckets.
+- **Hytale** — the build resolves the entitled copy through the OAuth signing proxy (downloader token a build secret via `tools/hytale-token`, which rotates) and bakes it, sha256-verified. **Assets.zip (3.4 GB) is its own bucket** → a jar-only bump re-pulls ~123 MB, not 3.5 GB. Java 25 (Temurin, pinned), auto-updater off. Boots baked off the baked assets; 12/12 tests green. `chandlery/hytale:test` 5.58 GB.
 
-The credential story is symmetric: Bedrock needs none; Valheim needs a Steam account token; Hytale needs a downloader token — each injected at runtime, none baked. `tools/hytale-token` mints/rotates Hytale's.
+The credential story is now a **build-time** one: Bedrock needs none; Valheim needs the Steam account token; Hytale needs a downloader token — each a build secret, none baked into the image. Running still passes through the deployer's own tokens (Valheim password, Hytale session tokens). `tools/hytale-token` mints/rotates Hytale's.
 
 **Remaining: milestone 7, the homelab migration** off LinuxGSM. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
 
@@ -206,7 +206,7 @@ migration itself (§8).
 
 ## 7. Open questions — now mostly resolved
 - **Hytale auth in CI** — **resolved.** `hytale.yml` is live: device-login once, a rotating refresh token in CI, written back via a GitHub App (§7.1).
-- **Layering to keep updates small** — **moot.** Pin-not-carry means the images are tens of MB with no game-binary layers to be clever about (§7.2, §7.3).
+- **Layering to keep updates small** — **resolved, and now the whole point.** The images bake the game (§7.3) and split it across mtime-normalised subtree buckets, so a version bump pulls only the changed buckets (Bedrock: 76.9 MB of 137 MB; Hytale's 3.4 GB Assets.zip dedupes wholesale). Measured in §7.2.
 - **Steam auth** — **resolved, and the opposite of what this hoped.** Anonymous *cannot* `download_depot` this depot ("No subscription"), and rollback needs old manifests, so Valheim fetches with DepotDownloader under a real licensed account (§7.3).
 - **Base image choice** — **resolved.** debian-slim (glibc) throughout; Bedrock's binary and SteamCMD both want glibc.
 - **Version marker** for CI "did it change" — **resolved.** Newest pushed tag (Bedrock/Hytale), or a cheap `build-<id>` marker tag for Valheim, whose human tag is the game version it does not yet know.
@@ -444,22 +444,44 @@ snapshot, no dependency on the previous image still existing, and every build
 stays independently reproducible. Chaining buys nothing this does not, and
 costs all of that.
 
-**The missing number** is how much of the 22 MB asset tree actually churns
-between releases. If the packs change wholesale every time, the current
-two-layer split is already optimal and there is nothing to do.
-`tools/release-diff` answers it from two release zips — it was written for this
-and is unrun, because Mojang's CDN rate-limited the sandbox too hard to fetch a
-second release. Run it on any machine with an unthrottled connection, or have
-CI publish each release's per-sub-tree digest map as an artifact and let the
-history accumulate for free.
+**The missing number is now measured** (`tools/release-diff` over 1.26.42.1 ->
+.43.1 -> .44.3, once the User-Agent fetch fix made the CDN cooperate): the asset
+tree barely churns at all. Between .42.1 and .43.1 **only `bedrock_server`
+changed** — 0.0 MB of the ~24 MB asset tree moved; between .43.1 and .44.3 the
+only other change was `libMinecraft.Server.Lib.a`, which the build discards. The
+binary is essentially the entire delta between releases.
+
+That makes the layering worth doing, but with a twist a naive two-layer split
+misses: a **single** asset `COPY` still re-pulls all 24 MB, because every release
+adds a tiny version-named manifest dir (`behavior_packs/vanilla_1.26.44/…`) whose
+add/remove poisons the whole layer's hash. And mtime matters as measured above:
+`unzip` stamps each release's build time onto every file, so even a byte-identical
+sub-tree hashes to a fresh layer unless normalised.
+
+**The design that survives (built, in `bedrock/`):** bake the game, split by
+churn. `bedrock_server` gets its own top layer — the ~76 MB every bump must pull.
+The asset tree is distributed across 16 `COPY` layers by a stable hash of each
+file's depth-2 sub-tree (`bedrock/bucketize`), every mtime normalised to
+`SOURCE_DATE_EPOCH`. An unchanged sub-tree bakes to a byte-identical bucket the
+registry dedupes; churn only re-pulls its own bucket. Bucketing (not one layer,
+not one-per-pack) because one layer re-pulls everything and per-pack is ~150
+layers past overlay2's cap — 16 is bounded *and* adaptive (new packs need no
+Dockerfile edit). Measured on the real images: **20 of 29 layers dedupe across
+.43.1 <-> .44.3, and a bump downloads 76.9 MB (76.0 binary + 0.9 assets)** against
+137 MB first pull. The +0.3 % gzip cost of splitting and the ~15 extra concurrent
+blob GETs on first pull are noise; a bump makes *fewer* requests than a fat layer
+since unchanged buckets are skipped by digest.
 
 ---
 
 ### 7.3 Licensing, and the design it forces
 
-**Decision taken: the images are published publicly.** Everything below follows
-from that, because publishing publicly and baking game content are not
-compatible.
+**Decision taken (reversed this session): the images bake the game and ship to a
+PRIVATE registry.** The earlier decision was to publish publicly, which forbade
+baking and forced pin-and-fetch; the value case — smaller effective pulls, real
+rollback, a simpler runtime — was strong enough to reverse it. Everything below
+records both the terms (unchanged) and the design the private-registry decision
+now permits.
 
 #### What the terms say
 
@@ -482,27 +504,32 @@ Not legal advice — but all three read the same way, and one of them is explici
   per-request URL (§7.1). A public image would hand those bytes to anyone who
   pulls it, gate and all.
 
-A private registry would sidestep all of this — copying for your own machines is
-much closer to ordinary use. That option is now closed by the decision above.
+A private registry sidesteps all of this — copying for your own machines is much
+closer to ordinary use than handing bytes to anyone who pulls a public tag. That
+is the option now **chosen**, and it is what makes baking legitimate.
 
-#### The design that survives: pin, don't carry
+#### The design: bake, and layer by churn
 
-The image records **which** version, precisely enough that it cannot run
-anything else, and fetches the bytes from upstream on first start. This is not
-the runtime-download model it superficially resembles:
+The image **bakes** the exact version, fetched and verified **at build** (sha256,
+or the immutable manifest gid). The tag still cannot lie — a wrong build fails the
+build, not a first boot:
 
 | | version comes from | can the tag lie? |
 | --- | --- | --- |
 | LinuxGSM, itzg | a runtime environment variable | yes — same tag, different software |
-| **Chandlery** | **baked at build, verified on fetch** | **no — it fails instead** |
+| pin-and-fetch (the intermediate) | baked at build, verified on first fetch | no — it fails to start |
+| **Chandlery (baked)** | **baked and verified at build** | **no — the build fails** |
 
 What is kept: tag = version, rebuild-on-release, rollback, and a checksum that
-makes the pin cryptographic. What is given up: self-contained images, offline
-start, and a fast first boot. Cache the payload on `/data` and only the first
-start of a given version pays.
+makes the pin cryptographic. What is *gained* over pin-and-fetch: self-contained
+images (no fetch tooling, no runtime network), offline and fast first boot, and —
+the point — small version bumps, because the game is split across mtime-normalised
+subtree buckets so an unchanged subtree is a layer the registry dedupes (§7.2).
+What is given up: public distribution (hence the private registry), and a fatter
+first pull than a thin pin-and-fetch image.
 
-It needs no new architecture — the base skeleton's `prepare` hook already runs
-before the server starts, and fetch-verify-extract is exactly what it is for.
+The fetch machinery moves from a runtime `prepare` hook to a build stage; the
+credential each game needs becomes a **build secret**, none baked into the image.
 
 #### Each game has a version-addressed handle. They just look different.
 
@@ -528,7 +555,7 @@ surprise:
   manifest — no rollback. So Valheim fetches with **DepotDownloader** under the
   operator's own **licensed** account. Its login is a portable ~640-byte token
   (no per-run 2FA, works across machines and CI — unlike a machine-bound SteamCMD
-  sentry), injected at runtime; the image carries none.
+  sentry), supplied to the build as a secret; the image carries none.
 - **Old manifests stay downloadable.** Iron Gate does not block them (Steam lets
   developers, but they haven't), so rollback is real. `api.steamcmd.net` reports
   only the *current* gid, so **CI records the gid it used** on every build; our
@@ -542,12 +569,12 @@ static source, so CI reads it by booting the server.
 
 #### Hytale works under this model, today
 
-Nothing has to change for it. The image carries no game content, so there is no
-redistribution question; it records version and patchline, and at start the
-operator's own credential fetches their own entitled copy — the same shape as
-the `HYTALE_SERVER_SESSION_TOKEN` passthrough the server already needs. Unlike
-Bedrock there is no URL to record, because Hytale's asset URLs are signed and
-per-request; the version is the pin, and the URL is resolved at runtime.
+Under the private-registry decision Hytale bakes like the others: the **build**
+resolves the entitled copy through the OAuth signing proxy (the downloader token
+a build secret, minted and rotated by `tools/hytale-token`) and bakes it, sha256
+-verified. Assets.zip (3.4 GB) is a top-level file, so it becomes its own bucket
+layer that dedupes wholesale across versions. Running the server is still token
+passthrough — `HYTALE_SERVER_SESSION_TOKEN` and friends, injected by the deployer.
 
 One wrinkle remains: **CI still needs a credential to *detect* a release**, since
 the version manifest is authenticated (§7.1). That is an authenticated GET of a
@@ -556,12 +583,14 @@ refresh token in CI, handled as §7.1 describes.
 
 #### Consequences — now carried out
 
-- **Bedrock and Valheim were converted from baking to pin-and-fetch**, and all
-  three games publish to GHCR. This is what made them publishable at all.
-- **§7.2's layering question evaporated.** A thin image is tens of megabytes;
-  there are no game-binary layers to be clever about. `tools/release-diff` stays
-  useful for understanding upstream churn, but it no longer gates anything.
-- **The registry decision got easier** — GHCR only, public (§8).
+- **All three games bake and are layered by churn.** The intermediate pin-and-fetch
+  design (milestone 6) is superseded: the fetch moved to a build stage, the game
+  is baked, and the payload is split across mtime-normalised subtree buckets.
+- **§7.2's layering question is the whole point, and is measured.** `tools/release-diff`
+  answered it for Bedrock (the binary is the delta; assets are frozen), and the
+  bucket split is what a version bump now pays for — nothing more.
+- **The registry decision reversed** — a **private** registry, because baking
+  redistributes game content (§8). Public GHCR is off the table for these images.
 
 ---
 

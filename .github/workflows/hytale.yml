@@ -39,8 +39,15 @@ permissions:
   packages: write
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE: ghcr.io/${{ github.repository }}/hytale
+  # BAKED images carry the game (PLAN 7.3) → PRIVATE registry only, named by the
+  # PRIVATE_REGISTRY repo variable; unset means build-and-verify with NO push.
+  #
+  # TODO (baked CI, needs the private registry provisioned to test): the fetch
+  # now happens at BUILD, so the resolved access token must pass as a build
+  # secret (--secret id=hytale-token, from the $access already minted below),
+  # not baked or passed at runtime. The token rotation step stays as-is.
+  REGISTRY: ${{ vars.PRIVATE_REGISTRY }}
+  IMAGE: ${{ vars.PRIVATE_REGISTRY }}/hytale
   HYTALE_PATCHLINE: release
 
 jobs:
@@ -141,9 +148,13 @@ jobs:
             --build-arg HYTALE_VERSION="$VERSION" \
             --build-arg HYTALE_PATCHLINE="$HYTALE_PATCHLINE" \
             --build-arg HYTALE_SHA256="$SHA256" \
-            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" hytale
-          docker push "${IMAGE}:${VERSION}"
-          docker push "${IMAGE}:latest"
+            -t "${IMAGE:-hytale}:${VERSION}" -t "${IMAGE:-hytale}:latest" hytale
+          if [ -n "${REGISTRY}" ]; then
+            docker push "${IMAGE}:${VERSION}"
+            docker push "${IMAGE}:latest"
+          else
+            echo "No PRIVATE_REGISTRY set; built hytale:${VERSION} but not pushing (baked content stays private)."
+          fi
 
       - name: Say what shipped
         env:

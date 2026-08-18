@@ -39,8 +39,16 @@ permissions:
   packages: write
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE: ghcr.io/${{ github.repository }}/valheim
+  # BAKED images carry the game (PLAN 7.3) → PRIVATE registry only, named by the
+  # PRIVATE_REGISTRY repo variable; unset means build-and-verify with NO push.
+  #
+  # TODO (baked CI, needs the private registry + secrets provisioned to test):
+  # the fetch now happens at BUILD, so STEAM_USERNAME must pass as a --build-arg
+  # and the DepotDownloader token as a build secret (--secret id=steam-token,
+  # from base64 STEAM_LOGIN_TOKEN decoded to a file), not as runtime `-e` to a
+  # staging container. The version can then be read by running the built image.
+  REGISTRY: ${{ vars.PRIVATE_REGISTRY }}
+  IMAGE: ${{ vars.PRIVATE_REGISTRY }}/valheim
 
 jobs:
   resolve:
@@ -156,10 +164,14 @@ jobs:
             --build-arg VALHEIM_VERSION="$version" \
             --build-arg VALHEIM_BUILD_ID="$BUILD_ID" \
             --build-arg VALHEIM_MANIFEST_GID="$MANIFEST_GID" \
-            -t "${IMAGE}:${version}" -t "${IMAGE}:latest" valheim
-          # Push :latest last so the registry's default view lands on it.
-          docker push "${IMAGE}:${version}"
-          docker push "${IMAGE}:latest"
+            -t "${IMAGE:-valheim}:${version}" -t "${IMAGE:-valheim}:latest" valheim
+          if [ -n "${REGISTRY}" ]; then
+            # Push :latest last so the registry's default view lands on it.
+            docker push "${IMAGE}:${version}"
+            docker push "${IMAGE}:latest"
+          else
+            echo "No PRIVATE_REGISTRY set; built valheim:${version} but not pushing (baked content stays private)."
+          fi
 
           {
             echo "### Valheim ${version}"

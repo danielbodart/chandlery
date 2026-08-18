@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs as the game user before the server starts. Valheim refuses to start on
 # several conditions and is vague about which; check them here where we can say
-# something useful.
+# something useful. The game is baked at /opt/valheim, so there is nothing to
+# fetch — this is validation only.
 set -eu
 
 log() { printf '[valheim] %s\n' "$*" >&2; }
@@ -27,27 +28,7 @@ case "$world" in
         ;;
 esac
 
-# First start fetches the pinned build into /cache; later starts reuse it. The
-# cache is keyed by the manifest gid, so a build id that re-points at new bytes
-# is a different key and refetches, while the same bytes are never pulled twice.
-: "${VALHEIM_MANIFEST_GID:?VALHEIM_MANIFEST_GID is not set; this image is misbuilt}"
-chandlery-cache valheim "$VALHEIM_MANIFEST_GID" /usr/local/lib/chandlery/fetch >/dev/null
-
-# Refresh steamclient.so via SteamCMD, which self-updates to the current library.
-# The depot's own copy is too old for the server's Steam init; keep the client on
-# /cache so a container recreate does not re-download it, and each start lets
-# SteamCMD pick up any newer one. Kept quiet — it is chatty and non-fatal. Guarded
-# on /opt/steamcmd so the adapter's fake-server fixture (which has no SteamCMD and
-# needs no real Steam) skips it.
-if [ -d /opt/steamcmd ]; then
-    sc="${CHANDLERY_CACHE:-/cache}/steamcmd"
-    if [ ! -x "$sc/steamcmd.sh" ]; then
-        log "installing SteamCMD (for a current steamclient.so) onto /cache"
-        mkdir -p "$sc"; cp -a /opt/steamcmd/. "$sc/"
-    fi
-    "$sc/steamcmd.sh" +quit >/dev/null 2>&1 || true
-    [ -f "$sc/linux64/steamclient.so" ] \
-        || log "WARNING: SteamCMD did not produce steamclient.so; the server's Steam init may fail"
-fi
+game=/opt/valheim
+[ -x "$game/valheim_server.x86_64" ] || { log "no server baked at $game; this image is misbuilt"; exit 70; }
 
 mkdir -p /data/worlds_local

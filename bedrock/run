@@ -1,5 +1,5 @@
 #!/bin/sh
-# Become BDS, from the version cached on /cache by the prepare hook.
+# Become BDS, from the version baked into the image at /opt/bedrock.
 #
 # BDS reads its packs and dlopens its libraries relative to the working
 # directory, so we cd into the game dir and put it on the library path before
@@ -8,11 +8,10 @@
 set -eu
 
 : "${BEDROCK_VERSION:?BEDROCK_VERSION is not set}"
-game="${CHANDLERY_CACHE:-/cache}/bedrock/$BEDROCK_VERSION"
+game=/opt/bedrock
 
 [ -x "$game/bedrock_server" ] || {
-    echo "[bedrock] $BEDROCK_VERSION is not on /cache (no $game/bedrock_server);" >&2
-    echo "[bedrock] the prepare hook should have fetched it — did it run?" >&2
+    echo "[bedrock] no bedrock_server baked at $game; this image is misbuilt" >&2
     exit 70
 }
 

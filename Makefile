@@ -5,10 +5,25 @@
 REGISTRY ?= chandlery
 TAG      ?= test
 
+# The fixed mtime baked onto every game file, so an unchanged asset tree hashes
+# to the same layer across versions and the registry dedupes it (bedrock/Dockerfile).
+# A constant, not $(shell date): a build epoch that moved every run would defeat it.
+SOURCE_DATE_EPOCH ?= 0
+
 # Only needed behind a TLS-terminating proxy; empty everywhere else.
 EXTRA_CA ?= $(wildcard /root/.ccr/ca-bundle.crt)
 BUILD_SECRETS = $(if $(EXTRA_CA),--secret id=extra-ca$(comma)src=$(EXTRA_CA),)
 comma := ,
+
+# Baked images fetch the game at build (PLAN 7.3), so the fetch credentials are
+# build secrets — a file path each, none baked into the image.
+#   STEAM_USERNAME + STEAM_TOKEN : the licensed Steam account and its
+#     DepotDownloader account.config, for Valheim.
+#   HYTALE_TOKEN : a file holding a downloader access token, e.g.
+#     HYTALE_TOKEN=<(./tools/hytale-token) — minted and rotated on the host.
+STEAM_USERNAME ?=
+STEAM_TOKEN    ?=
+HYTALE_TOKEN   ?=
 
 # Default to whatever upstream ships right now. Pass BEDROCK_VERSION to pin.
 BEDROCK_VERSION      ?= $(shell ./bedrock/upstream-version)
@@ -44,6 +59,8 @@ base:
 bedrock: base
 	docker build $(BUILD_SECRETS) --build-arg BASE=$(REGISTRY)/base:$(TAG) \
 	  --build-arg BEDROCK_VERSION=$(BEDROCK_VERSION) \
+	  --build-arg BEDROCK_SHA256=$(BEDROCK_SHA256) \
+	  --build-arg SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
 	  -t $(REGISTRY)/bedrock:$(BEDROCK_VERSION) -t $(REGISTRY)/bedrock:$(TAG) bedrock
 
 test-bedrock: bedrock
@@ -56,6 +73,9 @@ valheim: base
 	  --build-arg VALHEIM_VERSION=$(VALHEIM_VERSION) \
 	  --build-arg VALHEIM_BUILD_ID=$(VALHEIM_BUILD_ID) \
 	  --build-arg VALHEIM_MANIFEST_GID=$(VALHEIM_MANIFEST_GID) \
+	  --build-arg STEAM_USERNAME=$(STEAM_USERNAME) \
+	  --build-arg SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
+	  $(if $(STEAM_TOKEN),--secret id=steam-token$(comma)src=$(STEAM_TOKEN),) \
 	  -t $(REGISTRY)/valheim:$(VALHEIM_VERSION) -t $(REGISTRY)/valheim:$(TAG) valheim
 
 # The adapter — prepare checks, argument assembly, stop signal, health probe —
@@ -78,6 +98,8 @@ hytale: base
 	  --build-arg HYTALE_VERSION=$(HYTALE_VERSION) \
 	  --build-arg HYTALE_PATCHLINE=$(HYTALE_PATCHLINE) \
 	  --build-arg HYTALE_SHA256=$(HYTALE_SHA256) \
+	  --build-arg SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
+	  $(if $(HYTALE_TOKEN),--secret id=hytale-token$(comma)src=$(HYTALE_TOKEN),) \
 	  -t $(REGISTRY)/hytale:$(HYTALE_VERSION) -t $(REGISTRY)/hytale:$(TAG) hytale
 
 # The adapter — prepare checks, argument assembly, the console stop — on a fake

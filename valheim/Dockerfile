@@ -1,22 +1,27 @@
 # syntax=docker/dockerfile:1
 #
-# Valheim Dedicated Server — pinned, not baked.
+# Valheim Dedicated Server — baked, layered by churn.
 #
-# The image carries no game content: the Steam Subscriber Agreement forbids
-# reproducing or distributing it (PLAN 7.3). It records precisely *which* build —
-# the depot and the immutable manifest gid — and fetches those exact bytes on
-# first start with DepotDownloader. Pinning the manifest (not just the public
-# branch) is what makes rollback possible: an old gid still fetches its exact
-# bytes, which is the whole reason to run these images.
+# The build fetches exactly the pinned depot manifest with DepotDownloader and
+# bakes it. As with Bedrock (bedrock/Dockerfile) the game tree is split across
+# ASSET_BUCKETS COPY layers by a stable hash of each file's depth-2 subtree
+# (bucketize), every mtime normalised to SOURCE_DATE_EPOCH, so an unchanged
+# subtree bakes to a byte-identical layer the registry dedupes across versions
+# and a bump re-pulls only what actually changed. A rollback is `docker pull
+# <old tag>`: its unchanged buckets are already local.
 #
-# Anonymous login cannot download this depot ("No subscription"), so the fetch
-# authenticates with the operator's own Steam account — a licensed account, its
-# portable DepotDownloader token injected at runtime (image carries none), the
-# same shape as Hytale's token passthrough.
+# Baking redistributes Valheim, which the Steam Subscriber Agreement forbids for
+# a PUBLIC image (PLAN 7.3) — this image is for a PRIVATE registry. The pin stays
+# exact: DepotDownloader fetches one immutable manifest gid, so the baked layers
+# cannot be any build but the one on the tag.
 #
-# The tag is the human-facing *game* version (e.g. 0.221.12); the Steam build id
-# and manifest gid ride along as labels, since only they are recoverable cheaply.
+# The fetch authenticates with the operator's own licensed Steam account (the
+# depot is not anonymous-downloadable): the account.config token is a BUILD
+# SECRET (id=steam-token), the username a build-arg — neither rides into the
+# image. steamclient.so is refreshed from SteamCMD at build (the depot's is too
+# old for the server's Steam init) and baked; a rebuild refreshes it if it ages.
 ARG BASE=chandlery/base:test
+ARG FETCH_BASE=debian:bookworm-slim
 ARG DEPOTDOWNLOADER_VERSION=3.4.0
 ARG DEPOTDOWNLOADER_SHA256=a999dec66b4850fc961bd50366696d23c2d0fad7b18790e6a5647b2f19097a53
 
@@ -27,17 +32,92 @@ COPY probe/go.mod probe/main.go probe/main_test.go ./
 # as part of building it.
 RUN CGO_ENABLED=0 go test ./... && CGO_ENABLED=0 go build -trimpath -o /chandlery-a2s .
 
+# ---- fetch: authenticate, download the pinned manifest, split, bucket, normalise ----
+FROM ${FETCH_BASE} AS fetch
+
+# No defaults for the identifiers: building "some build of Valheim" is the thing
+# this project exists to prevent (see bedrock/Dockerfile).
+ARG VALHEIM_MANIFEST_GID
+ARG VALHEIM_APP_ID=896660
+ARG VALHEIM_DEPOT_ID=896661
+# The licensed account's username. Not a secret; the token is (mounted below).
+ARG STEAM_USERNAME
+ARG DEPOTDOWNLOADER_VERSION
+ARG DEPOTDOWNLOADER_SHA256
+ARG SOURCE_DATE_EPOCH=0
+ARG ASSET_BUCKETS=16
+
+COPY --chmod=0755 bucketize /usr/local/bin/bucketize
+
+RUN set -eux; \
+    test -n "${VALHEIM_MANIFEST_GID}" || { echo "VALHEIM_MANIFEST_GID build-arg is required" >&2; exit 64; }; \
+    test -n "${STEAM_USERNAME}"       || { echo "STEAM_USERNAME build-arg is required" >&2; exit 64; }; \
+    apt-get update; \
+# ca-certificates + libicu for DepotDownloader (self-contained .NET); lib32gcc-s1
+# for SteamCMD (32-bit), which supplies a current steamclient.so.
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl unzip libicu72 lib32gcc-s1; \
+    rm -rf /var/lib/apt/lists/*; \
+# DepotDownloader, pinned by version + sha256 (MIT tooling, not the game).
+    curl -fsSL -o /tmp/dd.zip \
+      "https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_${DEPOTDOWNLOADER_VERSION}/DepotDownloader-linux-x64.zip"; \
+    echo "${DEPOTDOWNLOADER_SHA256}  /tmp/dd.zip" | sha256sum -c -; \
+    mkdir -p /opt/depotdownloader; \
+    unzip -q /tmp/dd.zip -d /opt/depotdownloader; \
+    chmod +x /opt/depotdownloader/DepotDownloader; \
+    rm /tmp/dd.zip
+
+# The authenticated fetch. The token is mounted, never baked; DepotDownloader
+# keeps its credential in .NET IsolatedStorage under $HOME, so we init the store
+# anonymously, drop the operator's token into it, then run authenticated with no
+# 2FA prompt — the same dance the old runtime fetch did, moved to build time.
+RUN --mount=type=secret,id=steam-token,required=true set -eux; \
+    DD=/opt/depotdownloader/DepotDownloader; \
+    export HOME=/tmp/dd-home; mkdir -p "$HOME"; \
+    "$DD" -app "${VALHEIM_APP_ID}" -manifest-only >/dev/null 2>&1 || true; \
+    ass=$(find "$HOME" -type d -name AssemFiles | head -1); \
+    test -n "$ass" || { echo "DepotDownloader did not init its credential store" >&2; exit 70; }; \
+    cp /run/secrets/steam-token "$ass/account.config"; \
+    "$DD" -app "${VALHEIM_APP_ID}" -depot "${VALHEIM_DEPOT_ID}" -manifest "${VALHEIM_MANIFEST_GID}" \
+          -username "${STEAM_USERNAME}" -remember-password -dir /dl; \
+# Relocate the server up out of DepotDownloader's layout into /stage, dropping
+# its .DepotDownloader bookkeeping.
+    found=$(find /dl -type f -name valheim_server.x86_64 | head -1); \
+    test -n "$found" || { echo "no valheim_server.x86_64 in the download" >&2; exit 65; }; \
+    mkdir -p /stage; \
+    (cd "$(dirname "$found")" && tar cf - --exclude='.DepotDownloader' .) | (cd /stage && tar xf -); \
+    chmod +x /stage/valheim_server.x86_64; \
+    rm -rf /dl "$HOME"
+
+# A current steamclient.so from SteamCMD, baked next to the server. The depot's
+# own is from 2022 and the server's Steam init rejects it ("Missing interface
+# adapter for SteamGameServer015"); SteamCMD self-updates to a current one.
+RUN set -eux; \
+    mkdir -p /opt/steamcmd; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors \
+         https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
+      | tar -xz -C /opt/steamcmd; \
+    /opt/steamcmd/steamcmd.sh +quit >/dev/null 2>&1 || true; \
+    sc=$(find /opt/steamcmd -name steamclient.so | head -1); \
+    test -n "$sc" || { echo "SteamCMD produced no steamclient.so" >&2; exit 70; }; \
+    cp "$sc" /stage/steamclient.so
+
+RUN set -eux; \
+# Distribute the whole game tree into buckets (no separate binary split: unlike
+# Bedrock, Valheim's churn is spread across DLLs and asset bundles, and the
+# generic subtree bucketing captures it). Then normalise every mtime.
+    bucketize /stage /buckets "${ASSET_BUCKETS}"; \
+    rm -rf /stage; \
+    find /buckets -exec touch --no-dereference -h -d "@${SOURCE_DATE_EPOCH}" {} +
+
+# ---- runtime: base + health probe + baked buckets + adapter ----
 FROM ${BASE}
 
-# No defaults for the three that identify the build: see bedrock/Dockerfile.
-# Building "some build of Valheim" is the thing this project exists to prevent.
 ARG VALHEIM_VERSION
 ARG VALHEIM_BUILD_ID
 ARG VALHEIM_MANIFEST_GID
 ARG VALHEIM_APP_ID=896660
 ARG VALHEIM_DEPOT_ID=896661
-ARG DEPOTDOWNLOADER_VERSION
-ARG DEPOTDOWNLOADER_SHA256
 
 USER root
 RUN set -eux; \
@@ -45,50 +125,38 @@ RUN set -eux; \
     test -n "${VALHEIM_BUILD_ID}"     || { echo "VALHEIM_BUILD_ID build-arg is required" >&2; exit 64; }; \
     test -n "${VALHEIM_MANIFEST_GID}" || { echo "VALHEIM_MANIFEST_GID build-arg is required" >&2; exit 64; }; \
     apt-get update; \
-# ca-certificates + libicu for DepotDownloader (self-contained .NET). libatomic1
-# and libpulse0 are the Valheim server's own runtime deps (per Iron Gate's Docker
-# image). lib32gcc-s1 is for SteamCMD, which is a 32-bit binary.
-    apt-get install -y --no-install-recommends \
-        ca-certificates curl unzip libicu72 libatomic1 libpulse0 lib32gcc-s1; \
-    rm -rf /var/lib/apt/lists/*; \
-# SteamCMD (the script only — it self-updates on first run). The depot ships a
-# stale (2022) steamclient.so that the server's Steam init rejects ("Missing
-# interface adapter for SteamGameServer015"); SteamCMD keeps a *current* one, and
-# the prepare hook refreshes it at start rather than baking a copy that would go
-# stale in turn. DepotDownloader still does the authenticated, manifest-pinned
-# game download — SteamCMD is only here for the client library.
-    mkdir -p /opt/steamcmd; \
-    curl -fsSL --http1.1 --retry 5 --retry-all-errors \
-         https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
-      | tar -xz -C /opt/steamcmd; \
-    chown -R chandlery:chandlery /opt/steamcmd; \
-# DepotDownloader, pinned by version and sha256. It authenticates with a real
-# Steam account and downloads a depot by manifest gid — which anonymous SteamCMD
-# cannot do. Baked (it is MIT-licensed tooling, not the game).
-    curl -fsSL -o /tmp/dd.zip \
-      "https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_${DEPOTDOWNLOADER_VERSION}/DepotDownloader-linux-x64.zip"; \
-    echo "${DEPOTDOWNLOADER_SHA256}  /tmp/dd.zip" | sha256sum -c -; \
-    mkdir -p /opt/depotdownloader; \
-    unzip -q /tmp/dd.zip -d /opt/depotdownloader; \
-    rm /tmp/dd.zip; \
-    chmod +x /opt/depotdownloader/DepotDownloader; \
-    chown -R chandlery:chandlery /opt/depotdownloader
-
-RUN --mount=type=secret,id=extra-ca \
-    if [ -s /run/secrets/extra-ca ]; then \
-        cp /run/secrets/extra-ca /usr/local/share/ca-certificates/extra-ca.crt; \
-        update-ca-certificates; \
-    fi
+# The Valheim server's own runtime deps (per Iron Gate's image). No SteamCMD,
+# DepotDownloader, curl, unzip or libicu here: the game is baked, so none of the
+# fetch machinery rides into the runtime image.
+    apt-get install -y --no-install-recommends libatomic1 libpulse0; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=probe /chandlery-a2s /usr/local/bin/chandlery-a2s
-COPY --chmod=0755 fetch         /usr/local/lib/chandlery/fetch
+# Asset buckets first: the lower, stable layers that dedupe across versions. The
+# count MUST match ASSET_BUCKETS in the fetch stage.
+COPY --from=fetch --chown=chandlery:chandlery /buckets/00/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/01/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/02/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/03/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/04/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/05/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/06/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/07/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/08/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/09/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/10/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/11/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/12/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/13/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/14/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/15/ /opt/valheim/
 COPY --chmod=0755 run           /usr/local/bin/valheim-server
 COPY --chmod=0755 prepare       /usr/local/lib/chandlery/prepare
 COPY --chmod=0755 stop-hook     /usr/local/lib/chandlery/stop
 COPY --chmod=0755 health        /usr/local/lib/chandlery/health
 COPY --chmod=0755 game-version  /usr/local/lib/chandlery/game-version
 
-# The pin travels as environment: prepare fetches the gid, run locates it.
+# The pin travels as environment: run locates the baked game, health reports it.
 ENV VALHEIM_VERSION=${VALHEIM_VERSION} \
     VALHEIM_BUILD_ID=${VALHEIM_BUILD_ID} \
     VALHEIM_MANIFEST_GID=${VALHEIM_MANIFEST_GID} \
@@ -98,8 +166,6 @@ ENV VALHEIM_VERSION=${VALHEIM_VERSION} \
 USER chandlery
 WORKDIR /data
 
-# The tag is the game version; the Steam identifiers that actually address the
-# bytes are recorded alongside it.
 LABEL org.opencontainers.image.title="Valheim Dedicated Server" \
       org.opencontainers.image.version="${VALHEIM_VERSION}" \
       org.opencontainers.image.source="https://github.com/danielbodart/chandlery" \
@@ -111,9 +177,8 @@ LABEL org.opencontainers.image.title="Valheim Dedicated Server" \
 # the first and will not let you set them independently.
 EXPOSE 2456/udp 2457/udp
 
-# Loading a large world takes a while, and the first start fetches ~1.6 GB before
-# that; a restart loop during either is how you corrupt a world.
-HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
+# Loading a large world takes a while; no first-run fetch to wait on any more.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
     CMD ["/usr/local/lib/chandlery/health"]
 
 CMD ["/usr/local/bin/valheim-server"]

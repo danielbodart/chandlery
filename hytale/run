@@ -13,7 +13,8 @@
 set -eu
 
 : "${HYTALE_VERSION:?HYTALE_VERSION is not set}"
-game="${CHANDLERY_CACHE:-/cache}/hytale/$HYTALE_VERSION"
+# The game is baked into the image.
+game=/opt/hytale
 
 jar="$game/Server/HytaleServer.jar"
 assets="$game/Assets.zip"
