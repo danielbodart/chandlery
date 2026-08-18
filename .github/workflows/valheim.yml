@@ -86,35 +86,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # See bedrock.yml: Docker Hub needs credentials a workflow cannot invent,
-      # so it switches itself on once they exist.
-      - id: hub
-        env:
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          BUILD_ID: ${{ needs.resolve.outputs.build_id }}
-        run: |
-          tags="${IMAGE}:${BUILD_ID}
-          ${IMAGE}:latest"
-          if [ -n "$DOCKERHUB_TOKEN" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-            tags="$tags
-          docker.io/chandlery/valheim:${BUILD_ID}
-          docker.io/chandlery/valheim:latest"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Docker Hub push skipped: set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN to enable it."
-          fi
-          {
-            echo "tags<<EOF"
-            echo "$tags"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - uses: docker/login-action@v3
-        if: steps.hub.outputs.enabled == 'true'
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # GHCR only, and public: free with no storage or transfer limit, and the
+      # automatic GITHUB_TOKEN pushes to it — no credential to create, store or
+      # rotate. Docker Hub would need repository secrets and buy nothing.
 
       - name: Build the skeleton
         uses: docker/build-push-action@v6
@@ -136,7 +110,9 @@ jobs:
           build-args: |
             BASE=chandlery/base:ci
             VALHEIM_BUILD_ID=${{ needs.resolve.outputs.build_id }}
-          tags: ${{ steps.hub.outputs.tags }}
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.resolve.outputs.build_id }}
+            ${{ env.IMAGE }}:latest
           cache-from: type=gha,scope=valheim
           cache-to: type=gha,scope=valheim,mode=max
 

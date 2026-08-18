@@ -8,11 +8,18 @@ Status: **building**. Milestones 1-4 are done and tested (skeleton, Bedrock, its
 
 ## 1. What it is
 
-A mono-repo of **clean-room, Docker-native game-server images**, where the **image tag *is* the game version**. Each game's server is installed **at image-build time** (not downloaded at container start), so:
+A mono-repo of **clean-room, Docker-native game-server images**, where the **image tag *is* the game version**. The image **pins** the exact version — by URL and checksum, by Steam depot manifest, or by version and patchline — and refuses to run anything else, so:
 
-- `chandlery/bedrock:1.26.44` is exactly Bedrock 1.26.44 — reproducible, pinned, rollback-able.
+- `chandlery/bedrock:1.26.44.3` is exactly Bedrock 1.26.44.3 — pinned, verified, rollback-able.
 - A new game release triggers a **rebuild** of that image, tagged with the new version + `:latest`.
 - The running lifecycle is plain Docker: `tini` as PID 1, a graceful stop that **saves before it exits**, a real health check, `restart` policy for crashes — no bespoke supervisor.
+
+The images ship **no game content**. That is a licensing constraint, not a design
+preference, and §7.3 explains it. The version is baked; the bytes are fetched
+from upstream on first start and checked against what was baked. The distinction
+that matters is against the runtime-download images this project was started to
+replace: there the version is an environment variable and the tag tells you
+nothing, so the same tag runs different software on different days.
 
 First three games: **Minecraft Bedrock**, **Valheim**, **Hytale**. Structured so more slot in via a small per-game adapter.
 
@@ -393,13 +400,126 @@ history accumulate for free.
 
 ---
 
+### 7.3 Licensing, and the design it forces
+
+**Decision taken: the images are published publicly.** Everything below follows
+from that, because publishing publicly and baking game content are not
+compatible.
+
+#### What the terms say
+
+Not legal advice — but all three read the same way, and one of them is explicit.
+
+- **Bedrock.** The [Minecraft EULA](https://www.minecraft.net/en-us/eula): you
+  "must not distribute anything we've made", spelled out as "give copies of our
+  game software or content to anyone else". No dedicated-server carve-out.
+  [itzg's image](https://github.com/itzg/docker-minecraft-bedrock-server) states
+  plainly that "the Bedrock server software is not bundled into this image",
+  and every serious Bedrock image does the same — which is its own evidence.
+- **Valheim.** The
+  [Steam Subscriber Agreement](https://store.steampowered.com/subscriber_agreement/)
+  is explicit: you "may not, in whole or in part, copy… reproduce, publish,
+  distribute" Content without Valve's prior written consent, and are "not
+  entitled to… transfer reproductions of the Content and Services to other
+  parties in any way". The dedicated-server clause grants *use* on unlimited
+  machines, not distribution.
+- **Hytale.** Every download is gated behind per-account OAuth and a signed,
+  per-request URL (§7.1). A public image would hand those bytes to anyone who
+  pulls it, gate and all.
+
+A private registry would sidestep all of this — copying for your own machines is
+much closer to ordinary use. That option is now closed by the decision above.
+
+#### The design that survives: pin, don't carry
+
+The image records **which** version, precisely enough that it cannot run
+anything else, and fetches the bytes from upstream on first start. This is not
+the runtime-download model it superficially resembles:
+
+| | version comes from | can the tag lie? |
+| --- | --- | --- |
+| LinuxGSM, itzg | a runtime environment variable | yes — same tag, different software |
+| **Chandlery** | **baked at build, verified on fetch** | **no — it fails instead** |
+
+What is kept: tag = version, rebuild-on-release, rollback, and a checksum that
+makes the pin cryptographic. What is given up: self-contained images, offline
+start, and a fast first boot. Cache the payload on `/data` and only the first
+start of a given version pays.
+
+It needs no new architecture — the base skeleton's `prepare` hook already runs
+before the server starts, and fetch-verify-extract is exactly what it is for.
+
+#### Each game has a version-addressed handle. They just look different.
+
+| game | what the image pins | how the bytes are fetched |
+| --- | --- | --- |
+| **Bedrock** | the versioned URL + **sha256** | plain HTTPS; old versions stay up (1.26.42.1 and 1.26.43.1 both still 200) |
+| **Valheim** | depot + **manifest gid**, e.g. `896661:962159520942340660` | `steamcmd +download_depot 896660 896661 <gid>` |
+| **Hytale** | version + patchline | the operator's own OAuth token buys a signed URL at start |
+
+The Valheim entry corrects an earlier claim in this plan that Steam only serves
+"latest". `app_update` does follow the `public` branch, but branches are only
+pointers: content is addressed by **immutable depot manifests**, and depot
+`896661` is the Linux server. Pinning the manifest makes a Valheim build
+*reproducible* — the same tag fetches the same bytes — which the current
+`app_update`-then-verify approach cannot promise.
+
+Two things to verify on a real machine, neither testable in the build sandbox:
+`download_depot` against an anonymous login, and whether Valve retains old
+manifests long enough to matter. `api.steamcmd.net` reports only the *current*
+gid per branch, so **CI must record the gid it used**, alongside the buildid, on
+every build. Our own history then keeps every published image re-creatable.
+
+#### Hytale works under this model, today
+
+Nothing has to change for it. The image carries no game content, so there is no
+redistribution question; it records version and patchline, and at start the
+operator's own credential fetches their own entitled copy — the same shape as
+the `HYTALE_SERVER_SESSION_TOKEN` passthrough the server already needs. Unlike
+Bedrock there is no URL to record, because Hytale's asset URLs are signed and
+per-request; the version is the pin, and the URL is resolved at runtime.
+
+One wrinkle remains: **CI still needs a credential to *detect* a release**, since
+the version manifest is authenticated (§7.1). That is an authenticated GET of a
+version number — no bytes, no redistribution — but it still means a rotating
+refresh token in CI, handled as §7.1 describes.
+
+#### Consequences for what is already built
+
+- **The Bedrock and Valheim images bake, and must be converted.** They are the
+  private-registry design. Until converted, do not publish them.
+- **§7.2's layering question mostly evaporates.** A thin image is tens of
+  megabytes; there are no 76 MB binary layers to be clever about.
+  `tools/release-diff` stays useful for understanding upstream churn, but it no
+  longer gates anything.
+- **The registry decision gets easier** — see §8.
+
+---
+
 ## 8. Build order (milestones)
 1. **Base skeleton**: tini + entrypoint (stop-hook dispatch) + healthcheck dispatch + non-root + /data. A trivial "sleep server" proves stop/health wiring.
 2. **Bedrock**: Mojang adapter (baked, drop symbols), stdin-`stop` hook, RakNet health. Replace the LinuxGSM Bedrock servers first (the ones we fought this month).
 3. **Bedrock CI**: rebuild-on-Mojang-release, tag=version, push.
 4. **Valheim**: SteamCMD adapter (896660), SIGINT stop, A2S health, CI on buildid.
 5. **Hytale**: buildable — see §7.1. Runtime auth is solved (token passthrough, no credentials in the image) and the download needs one device login by hand, then a rotating refresh token. Open before *publishing*: whether baking gated assets into a public image is redistribution (§7.1), which applies to Bedrock and Valheim too.
-6. **Ship + adopt**: publish images, migrate the homelab (`danielbodart/server`) off LinuxGSM one game at a time — configuring Tidewaiter per its own docs, deploy-side (§5).
+6. **Convert Bedrock and Valheim to pinned-not-baked** (§7.3), which is what makes them publishable. Bedrock pins URL + sha256; Valheim pins depot + manifest gid, which also makes its builds reproducible.
+7. **Ship + adopt**: publish to **GHCR only**, migrate the homelab (`danielbodart/server`) off LinuxGSM one game at a time — configuring Tidewaiter per its own docs, deploy-side (§5).
+
+### Registry: GHCR, public, and nothing else
+
+Public packages on GHCR are free with no storage or transfer limit, and CI
+pushes to them with the automatic `GITHUB_TOKEN` — **no credential to create,
+store or rotate**. Docker Hub needs a username and token as repository secrets
+and buys nothing we do not already have, so it is dropped rather than left as a
+disabled branch in the workflows.
+
+For contrast, had the images stayed private: GitHub Free allows 500 MB of
+package storage (shared with Actions artifacts) and 1 GB of transfer a month.
+Bedrock alone was 137 MB per pull when baked — about four versions before the
+quota is gone, against a project whose whole point is keeping old versions to
+roll back to. Public is not just simpler here, it is the only free option that
+fits. Pinned images are tens of megabytes anyway, so neither limit would bite
+now; the reasoning is recorded in case the images ever go private.
 
 ## 9. Non-goals (v1)
 - No mod/plugin management surface (that's itzg's turf for Java — we're not doing Minecraft Java here; itzg stays for Java).
