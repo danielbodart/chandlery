@@ -17,7 +17,11 @@
 #     way Valheim takes its password. HYTALE_AUTH_MODE=offline needs neither and
 #     is for LAN and our own tests.
 ARG BASE=chandlery/base:test
-ARG JAVA=eclipse-temurin:25-jre
+# Pinned, like everything else here: a floating 25-jre would drift the JRE under
+# a tag that is supposed to mean one exact thing. Bump this deliberately (it is
+# an ARG) rather than letting a rebuild pick up a new one. Temurin is Adoptium's
+# OpenJDK; the game needs Java 25.
+ARG JAVA=eclipse-temurin:25.0.3_9-jre
 
 FROM ${JAVA} AS java
 
