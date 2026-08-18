@@ -60,7 +60,10 @@ jobs:
           # that flaps or truncates mid-build; it is not a signature, because
           # Mojang does not publish one.
           url="https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-${version}.zip"
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --retry-max-time 300 \
+          # --http1.1: Mojang's CDN drops HTTP/2 streams on a transfer this size
+          # ("stream not closed cleanly"), which no retry recovers. Same reason
+          # the runtime fetch forces it.
+          curl -fsSL --http1.1 --retry 5 --retry-delay 5 --retry-all-errors --retry-max-time 300 \
                -A "chandlery (+https://github.com/${{ github.repository }})" -o bds.zip "$url"
           sha="$(sha256sum bds.zip | cut -d' ' -f1)"
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
@@ -92,7 +95,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
         with:
@@ -103,37 +105,35 @@ jobs:
       # GHCR only, and public: free with no storage or transfer limit, and the
       # automatic GITHUB_TOKEN pushes to it — no credential to create, store or
       # rotate. Docker Hub would need repository secrets and buy nothing.
-
-      - name: Build the skeleton
-        uses: docker/build-push-action@v6
-        with:
-          context: base
-          # BDS is x86-64 only; there is no ARM server build to fall back to.
-          platforms: linux/amd64
-          load: true
-          tags: chandlery/base:ci
-          cache-from: type=gha,scope=base
-          cache-to: type=gha,scope=base,mode=max
-
+      #
+      # Plain daemon build, not buildx: the game image is thin now (it fetches
+      # BDS at runtime, not at build), so there is nothing heavy to cache, and
+      # the game's `FROM chandlery/base:ci` just resolves the base we built a
+      # line earlier in the same daemon — no registry pull, no shared-store dance.
       - name: Build and push Bedrock
-        uses: docker/build-push-action@v6
-        with:
-          context: bedrock
-          platforms: linux/amd64
-          push: true
-          build-args: |
-            BASE=chandlery/base:ci
-            BEDROCK_VERSION=${{ needs.resolve.outputs.version }}
-            BEDROCK_SHA256=${{ needs.resolve.outputs.sha256 }}
-          tags: |
-            ${{ env.IMAGE }}:${{ needs.resolve.outputs.version }}
-            ${{ env.IMAGE }}:latest
-          cache-from: type=gha,scope=bedrock
-          cache-to: type=gha,scope=bedrock,mode=max
+        env:
+          DOCKER_BUILDKIT: "1"
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SHA256: ${{ needs.resolve.outputs.sha256 }}
+        run: |
+          docker build -t chandlery/base:ci base
+          # BDS is x86-64 only; there is no ARM server build to fall back to.
+          docker build \
+            --build-arg BASE=chandlery/base:ci \
+            --build-arg BEDROCK_VERSION="$VERSION" \
+            --build-arg BEDROCK_SHA256="$SHA256" \
+            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" bedrock
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:latest"
 
       - name: Say what shipped
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SHA256: ${{ needs.resolve.outputs.sha256 }}
         run: |
-          echo "### Bedrock ${{ needs.resolve.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${IMAGE}:${{ needs.resolve.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- zip sha256 \`${{ needs.resolve.outputs.sha256 }}\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Bedrock ${VERSION}"
+            echo ""
+            echo "- \`${IMAGE}:${VERSION}\`"
+            echo "- zip sha256 \`${SHA256}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
