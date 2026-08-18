@@ -23,7 +23,20 @@ cd "$game"
 
 # Steam's client library looks up the *game's* app id, not the server's.
 export SteamAppId=892970
-export LD_LIBRARY_PATH="$game/linux64:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$game:${LD_LIBRARY_PATH:-}"
+
+# Valheim's Steamworks loads steamclient.so from ~/.steam/sdk{64,32}; without it
+# the server logs "Steam is not initialized" and its network backend never comes
+# up. Use the current library SteamCMD refreshed onto /cache (the prepare hook),
+# not the stale one in the depot (which fails with "Missing interface adapter for
+# SteamGameServer015").
+sc="${CHANDLERY_CACHE:-/cache}/steamcmd/linux64/steamclient.so"
+[ -f "$sc" ] || sc=$(find "$game" -name steamclient.so 2>/dev/null | head -1)
+if [ -n "$sc" ] && [ -f "$sc" ]; then
+    for d in "$HOME/.steam/sdk64" "$HOME/.steam/sdk32"; do
+        mkdir -p "$d"; ln -sf "$sc" "$d/steamclient.so"
+    done
+fi
 
 set -- ./valheim_server.x86_64 \
     -nographics -batchmode \

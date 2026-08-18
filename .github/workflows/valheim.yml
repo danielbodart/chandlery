@@ -1,7 +1,14 @@
 # Rebuild Valheim when Steam publishes a new build of the dedicated server.
 #
-# Steam has no version string for a dedicated server, so the tag is the public
-# branch's build id, and "has upstream moved" means "has that number changed".
+# Steam only knows the build id; the human-facing version (e.g. 0.221.12) is a
+# code constant with no cheap source, so the tag is the *game version* — read by
+# actually downloading and booting the server once here. The build id and the
+# immutable manifest gid ride along as labels: the gid is what addresses the
+# exact bytes, and recording it on every build is what keeps old images
+# re-creatable for rollback (PLAN 7.3).
+#
+# The download is authenticated (anonymous cannot fetch this depot), so this
+# needs the licensed account's DepotDownloader token and username as secrets.
 name: valheim
 
 on:
@@ -13,7 +20,7 @@ on:
         description: 'Build this exact build id instead of whatever is current'
         required: false
       force:
-        description: 'Rebuild even if the tag already exists'
+        description: 'Rebuild even if this build id was already published'
         type: boolean
         default: false
   push:
@@ -47,15 +54,15 @@ jobs:
 
       - id: upstream
         name: Ask Steam what the public branch is on
+        env:
+          BUILD_ID_INPUT: ${{ inputs.build_id }}
         run: |
-          build_id="${{ inputs.build_id }}"
+          build_id="$BUILD_ID_INPUT"
           [ -n "$build_id" ] || build_id="$(./valheim/upstream-version)"
           echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
           echo "Upstream Valheim build: $build_id"
-
-          # The gid is the content address the image actually pins, and it is
-          # only ever the *current* one here — so record it now, on every build,
-          # or an old image can never be recreated (PLAN 7.3).
+          # The gid is only ever the *current* one here, so record it on every
+          # build or an old image can never be recreated (PLAN 7.3).
           manifest_gid="$(./valheim/upstream-version --gid)"
           echo "manifest_gid=$manifest_gid" >> "$GITHUB_OUTPUT"
           echo "Manifest gid: $manifest_gid"
@@ -68,13 +75,19 @@ jobs:
 
       - id: built
         name: Skip builds already published
+        env:
+          FORCE: ${{ inputs.force }}
+          EVENT: ${{ github.event_name }}
+          BUILD_ID: ${{ steps.upstream.outputs.build_id }}
         run: |
-          if [ "${{ inputs.force }}" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
+          # The tag is the game version, which we do not know without downloading,
+          # so the "already built?" check keys off a cheap build-<id> marker tag.
+          if [ "$FORCE" = "true" ] || [ "$EVENT" = "push" ]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
             echo "Building regardless: forced, or the image definition changed."
-          elif docker buildx imagetools inspect "${IMAGE}:${{ steps.upstream.outputs.build_id }}" >/dev/null 2>&1; then
+          elif docker buildx imagetools inspect "${IMAGE}:build-${BUILD_ID}" >/dev/null 2>&1; then
             echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "${IMAGE}:${{ steps.upstream.outputs.build_id }} already exists; nothing to do."
+            echo "build ${BUILD_ID} already published; nothing to do."
           else
             echo "needed=true" >> "$GITHUB_OUTPUT"
             echo "New build. Building."
@@ -93,34 +106,59 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # GHCR only, and public; plain daemon build, not buildx — see bedrock.yml
-      # for both. The image is thin (SteamCMD fetches the game at runtime), so
-      # `FROM chandlery/base:ci` just resolves the base built a line earlier.
-      - name: Build and push Valheim
+      # Reading the game version means downloading and booting the server once.
+      # Build a staging image, run it with the licensed Steam credential so it
+      # fetches the depot and boots far enough to log its version, read that, then
+      # rebuild tagged with it. The final image carries no game content either way
+      # — the version only sets a label — so the second build is nearly free.
+      - name: Build, read the version, and push Valheim
         env:
           DOCKER_BUILDKIT: "1"
           BUILD_ID: ${{ needs.resolve.outputs.build_id }}
           MANIFEST_GID: ${{ needs.resolve.outputs.manifest_gid }}
+          STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
+          STEAM_LOGIN_TOKEN: ${{ secrets.STEAM_LOGIN_TOKEN }}
         run: |
+          set -euo pipefail
           docker build -t chandlery/base:ci base
-          # The server is an x86-64 build; SteamCMD offers no ARM one.
+          # The server is an x86-64 build; there is no ARM one.
           docker build \
             --build-arg BASE=chandlery/base:ci \
+            --build-arg VALHEIM_VERSION=staging \
             --build-arg VALHEIM_BUILD_ID="$BUILD_ID" \
             --build-arg VALHEIM_MANIFEST_GID="$MANIFEST_GID" \
-            -t "${IMAGE}:${BUILD_ID}" -t "${IMAGE}:latest" valheim
-          docker push "${IMAGE}:${BUILD_ID}"
-          docker push "${IMAGE}:latest"
+            -t valheim:staging valheim
 
-      - name: Say what shipped
-        env:
-          BUILD_ID: ${{ needs.resolve.outputs.build_id }}
-          MANIFEST_GID: ${{ needs.resolve.outputs.manifest_gid }}
-        run: |
+          echo "Running the staging server to read the game version..."
+          cid=$(docker run -d \
+            -e VALHEIM_PASSWORD=chandleryci \
+            -e STEAM_USERNAME="$STEAM_USERNAME" \
+            -e STEAM_LOGIN_TOKEN="$STEAM_LOGIN_TOKEN" \
+            valheim:staging)
+          version=""
+          for _ in $(seq 1 60); do
+            sleep 10
+            line=$(docker logs "$cid" 2>&1 | grep -oE 'Valheim version: l-[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+            if [ -n "$line" ]; then version="${line##*l-}"; break; fi
+            docker ps -q --no-trunc | grep -q "$cid" || { echo "staging server exited early:"; docker logs "$cid" 2>&1 | tail -30; exit 1; }
+          done
+          docker rm -f "$cid" >/dev/null 2>&1 || true
+          [ -n "$version" ] || { echo "could not read the Valheim version"; exit 1; }
+          echo "Game version: $version"
+
+          docker build \
+            --build-arg BASE=chandlery/base:ci \
+            --build-arg VALHEIM_VERSION="$version" \
+            --build-arg VALHEIM_BUILD_ID="$BUILD_ID" \
+            --build-arg VALHEIM_MANIFEST_GID="$MANIFEST_GID" \
+            -t "${IMAGE}:${version}" -t "${IMAGE}:latest" -t "${IMAGE}:build-${BUILD_ID}" valheim
+          docker push "${IMAGE}:${version}"
+          docker push "${IMAGE}:latest"
+          docker push "${IMAGE}:build-${BUILD_ID}"
+
           {
-            echo "### Valheim build ${BUILD_ID}"
+            echo "### Valheim ${version}"
             echo ""
-            echo "- \`${IMAGE}:${BUILD_ID}\`"
-            # The gid is what makes this build re-creatable; keep it in the record.
+            echo "- \`${IMAGE}:${version}\`  (build ${BUILD_ID})"
             echo "- depot 896661 manifest gid \`${MANIFEST_GID}\`"
           } >> "$GITHUB_STEP_SUMMARY"

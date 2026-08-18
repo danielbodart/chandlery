@@ -33,4 +33,21 @@ esac
 : "${VALHEIM_MANIFEST_GID:?VALHEIM_MANIFEST_GID is not set; this image is misbuilt}"
 chandlery-cache valheim "$VALHEIM_MANIFEST_GID" /usr/local/lib/chandlery/fetch >/dev/null
 
+# Refresh steamclient.so via SteamCMD, which self-updates to the current library.
+# The depot's own copy is too old for the server's Steam init; keep the client on
+# /cache so a container recreate does not re-download it, and each start lets
+# SteamCMD pick up any newer one. Kept quiet — it is chatty and non-fatal. Guarded
+# on /opt/steamcmd so the adapter's fake-server fixture (which has no SteamCMD and
+# needs no real Steam) skips it.
+if [ -d /opt/steamcmd ]; then
+    sc="${CHANDLERY_CACHE:-/cache}/steamcmd"
+    if [ ! -x "$sc/steamcmd.sh" ]; then
+        log "installing SteamCMD (for a current steamclient.so) onto /cache"
+        mkdir -p "$sc"; cp -a /opt/steamcmd/. "$sc/"
+    fi
+    "$sc/steamcmd.sh" +quit >/dev/null 2>&1 || true
+    [ -f "$sc/linux64/steamclient.so" ] \
+        || log "WARNING: SteamCMD did not produce steamclient.so; the server's Steam init may fail"
+fi
+
 mkdir -p /data/worlds_local

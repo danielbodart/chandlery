@@ -111,14 +111,19 @@ it "carries no game content — it pins the build, not the bytes"
 # The whole point of the conversion: a public image may not redistribute Valheim.
 assert_equals "" "$(inspect 'find / -name valheim_server.x86_64 -not -path "*/cache/*" 2>/dev/null')" && pass
 
-it "records the build id in its tag's label, and the manifest gid it pins"
-assert_equals "${VALHEIM_BUILD_ID:?set VALHEIM_BUILD_ID}" \
+it "tags the image with the game version, and records the build id and gid"
+assert_equals "${VALHEIM_VERSION:?set VALHEIM_VERSION}" \
     "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE")" \
+  && assert_equals "${VALHEIM_BUILD_ID:?set VALHEIM_BUILD_ID}" \
+    "$(docker inspect -f '{{index .Config.Labels "dev.chandlery.valheim.build-id"}}' "$IMAGE")" \
   && assert_equals "${VALHEIM_MANIFEST_GID:?set VALHEIM_MANIFEST_GID}" \
     "$(inspect 'echo "$VALHEIM_MANIFEST_GID"')" && pass
 
-it "ships SteamCMD and the fetch machinery, not a baked payload"
-assert_equals "yes" "$(inspect '[ -x /opt/steamcmd/steamcmd.sh ] &&
+it "ships DepotDownloader and SteamCMD, not a baked payload"
+# DepotDownloader does the authenticated, manifest-pinned download (rollback);
+# SteamCMD is only here for a current steamclient.so.
+assert_equals "yes" "$(inspect '[ -x /opt/depotdownloader/DepotDownloader ] &&
+                                 [ -x /opt/steamcmd/steamcmd.sh ] &&
                                  [ -x /usr/local/lib/chandlery/fetch ] &&
                                  [ -x /usr/local/bin/chandlery-cache ] && echo yes')" && pass
 

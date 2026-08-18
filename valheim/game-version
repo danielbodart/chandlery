@@ -1,0 +1,30 @@
+#!/bin/sh
+# Print the Valheim game version (e.g. 0.221.12) for a downloaded server.
+#
+# Steam only knows the build id; the game version is a code constant with no
+# reliable static source (it appears only inside a hash-named asset bundle as
+# changelog text). So we boot the server just far enough to read the line it
+# logs — "Valheim version: l-0.221.12 (network version 36)" — and stop. CI uses
+# this to tag the image with the real version.
+set -eu
+
+game="${1:?usage: game-version <dir with valheim_server.x86_64>}"
+[ -x "$game/valheim_server.x86_64" ] || { echo "no valheim_server.x86_64 in $game" >&2; exit 70; }
+
+export LD_LIBRARY_PATH="$game/linux64:${LD_LIBRARY_PATH:-}"
+# Steam's client library looks up the game's app id, not the server's.
+export SteamAppId=892970
+
+tmp=$(mktemp -d)
+cd "$game"
+# The version prints in the first few seconds, before Steam networking; grep
+# stops at the first match and the timeout bounds the rest.
+ver=$(timeout 60 ./valheim_server.x86_64 -batchmode -nographics \
+        -name versionprobe -port 2456 -world versionprobe \
+        -password chandleryprobe -savedir "$tmp" 2>&1 \
+      | grep -m1 -oE 'l-[0-9]+\.[0-9]+\.[0-9]+' || true)
+rm -rf "$tmp"
+
+[ -n "$ver" ] || { echo "could not read the Valheim version from server output" >&2; exit 1; }
+# Strip the 'l-' platform prefix Valheim prepends on Linux.
+printf '%s\n' "${ver#l-}"
