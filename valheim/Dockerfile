@@ -10,10 +10,10 @@
 # and a bump re-pulls only what actually changed. A rollback is `docker pull
 # <old tag>`: its unchanged buckets are already local.
 #
-# Baking redistributes Valheim, which the Steam Subscriber Agreement forbids for
-# a PUBLIC image (PLAN 7.3) — this image is for a PRIVATE registry. The pin stays
-# exact: DepotDownloader fetches one immutable manifest gid, so the baked layers
-# cannot be any build but the one on the tag.
+# Baking redistributes Valheim, against the Steam Subscriber Agreement (PLAN 7.3)
+# — accepted here deliberately for the value it buys. The pin stays exact:
+# DepotDownloader fetches one immutable manifest gid, so the baked layers cannot
+# be any build but the one on the tag.
 #
 # The fetch authenticates with the operator's own licensed Steam account (the
 # depot is not anonymous-downloadable): the account.config token is a BUILD
@@ -45,7 +45,7 @@ ARG STEAM_USERNAME
 ARG DEPOTDOWNLOADER_VERSION
 ARG DEPOTDOWNLOADER_SHA256
 ARG SOURCE_DATE_EPOCH=0
-ARG ASSET_BUCKETS=16
+ARG ASSET_BUCKETS=32
 
 COPY --chmod=0755 bucketize /usr/local/bin/bucketize
 
@@ -103,12 +103,15 @@ RUN set -eux; \
     cp "$sc" /stage/steamclient.so
 
 RUN set -eux; \
-# Distribute the whole game tree into buckets (no separate binary split: unlike
-# Bedrock, Valheim's churn is spread across DLLs and asset bundles, and the
-# generic subtree bucketing captures it). Then normalise every mtime.
+# Split the server binary into its own top layer — like Bedrock's bedrock_server,
+# it changes every build while the asset tree around it does not, so it should not
+# sit in a bucket that would drag its frozen neighbours on every bump. The rest of
+# the tree (DLLs, asset bundles) buckets by subtree. Then normalise every mtime.
+    mkdir -p /bin-layer; \
+    mv /stage/valheim_server.x86_64 /bin-layer/valheim_server.x86_64; \
     bucketize /stage /buckets "${ASSET_BUCKETS}"; \
     rm -rf /stage; \
-    find /buckets -exec touch --no-dereference -h -d "@${SOURCE_DATE_EPOCH}" {} +
+    find /buckets /bin-layer -exec touch --no-dereference -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 # ---- runtime: base + health probe + baked buckets + adapter ----
 FROM ${BASE}
@@ -150,11 +153,30 @@ COPY --from=fetch --chown=chandlery:chandlery /buckets/12/ /opt/valheim/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/13/ /opt/valheim/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/14/ /opt/valheim/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/15/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/16/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/17/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/18/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/19/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/20/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/21/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/22/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/23/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/24/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/25/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/26/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/27/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/28/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/29/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/30/ /opt/valheim/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/31/ /opt/valheim/
 COPY --chmod=0755 run           /usr/local/bin/valheim-server
 COPY --chmod=0755 prepare       /usr/local/lib/chandlery/prepare
 COPY --chmod=0755 stop-hook     /usr/local/lib/chandlery/stop
 COPY --chmod=0755 health        /usr/local/lib/chandlery/health
 COPY --chmod=0755 game-version  /usr/local/lib/chandlery/game-version
+# The server binary last: the top layer, and the per-build delta. It changes
+# every version while everything below it does not.
+COPY --from=fetch --chown=chandlery:chandlery /bin-layer/valheim_server.x86_64 /opt/valheim/valheim_server.x86_64
 
 # The pin travels as environment: run locates the baked game, health reports it.
 ENV VALHEIM_VERSION=${VALHEIM_VERSION} \

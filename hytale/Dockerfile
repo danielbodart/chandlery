@@ -5,18 +5,20 @@
 # The build resolves the operator's entitled copy through Hytale's OAuth signing
 # proxy and bakes it. As with Bedrock and Valheim the payload is split across
 # ASSET_BUCKETS COPY layers by a stable hash of each file's depth-2 subtree
-# (bucketize), every mtime normalised to SOURCE_DATE_EPOCH — which matters most
-# here: Assets.zip is ~3.3 GB and changes rarely, so as a top-level file it gets
-# its own bucket layer that dedupes wholesale across versions while the jar and
-# config churn in their own small buckets. A rollback is `docker pull <old tag>`;
-# its 3.3 GB Assets bucket is already local.
+# (bucketize), every mtime normalised to SOURCE_DATE_EPOCH. The 3.4 GB Assets.zip
+# is a STORED (uncompressed) container of ~60k files, and the server reads
+# --assets as a directory (Options: DIR_OR_ZIP), so the build UNZIPS it and bakes
+# the tree: each asset then buckets independently and an asset bump re-pulls only
+# the changed buckets, not 3.4 GB wholesale — at essentially no size cost, since
+# the zip stored without compression. A rollback is `docker pull <old tag>`; its
+# unchanged asset buckets are already local.
 #
-# Baking redistributes Hytale, whose every asset is gated behind per-account
-# OAuth and a signed URL (PLAN 7.1) — this image is for a PRIVATE registry. The
-# fetch needs a downloader *access* token: mint it on the host with
-# tools/hytale-token (it refreshes and rotates) and pass it as a BUILD SECRET
-# (id=hytale-token). The image holds no credential; the pin stays cryptographic
-# (sha256-verified against the manifest, or HYTALE_SHA256 if given).
+# Baking redistributes Hytale's OAuth-gated assets (PLAN 7.1, 7.3) — accepted
+# here deliberately for the value it buys. The fetch needs a downloader *access*
+# token: mint it on the host with tools/hytale-token (it refreshes and rotates)
+# and pass it as a BUILD SECRET (id=hytale-token). The image holds no credential;
+# the pin stays cryptographic (sha256-verified against the manifest, or
+# HYTALE_SHA256 if given).
 #
 # Running the server is still token passthrough: the deployer injects
 # HYTALE_SERVER_SESSION_TOKEN and HYTALE_SERVER_IDENTITY_TOKEN at runtime (or
@@ -36,7 +38,7 @@ ARG HYTALE_VERSION
 ARG HYTALE_PATCHLINE=release
 ARG HYTALE_SHA256=
 ARG SOURCE_DATE_EPOCH=0
-ARG ASSET_BUCKETS=16
+ARG ASSET_BUCKETS=32
 
 COPY --chmod=0755 bucketize /usr/local/bin/bucketize
 
@@ -79,14 +81,30 @@ RUN --mount=type=secret,id=hytale-token,required=true set -eux; \
     mkdir -p /stage; \
     unzip -q /tmp/hytale.zip -d /stage; \
     rm -f /tmp/hytale.zip; \
-    find /stage -maxdepth 2 -name '*.jar' | grep -q . || { echo "no server jar in the download" >&2; exit 65; }
+    find /stage -maxdepth 2 -name '*.jar' | grep -q . || { echo "no server jar in the download" >&2; exit 65; }; \
+# Assets.zip is a STORED (uncompressed) container of ~60k files, and the server
+# reads --assets as a directory (Options metavar DIR_OR_ZIP, verified). Unzip it
+# and bake the tree: as files each asset buckets and dedupes across versions,
+# instead of one 3.4 GB blob re-pulling wholesale on any change — and because the
+# zip stores without compression, unpacking it costs essentially no image size.
+    if [ -f /stage/Assets.zip ]; then \
+        unzip -q /stage/Assets.zip -d /stage/Assets; \
+        rm -f /stage/Assets.zip; \
+    fi
 
 RUN set -eux; \
-# Bucket the whole payload. Assets.zip is a top-level file, so it becomes its own
-# bucket layer — exactly the large-stable-asset isolation §7.2 wanted.
+# Split the server code into its own top layer — like Bedrock's bedrock_server,
+# the jar (and its compiled AOT cache) change every build while the unzipped
+# Assets tree does not, so they should not sit in a bucket that would drag frozen
+# assets on every bump. Move them out preserving the Server/ path, then bucket the
+# rest (the Assets tree, Licenses, config).
+    mkdir -p /bin-layer/Server; \
+    mv /stage/Server/HytaleServer.jar /bin-layer/Server/HytaleServer.jar; \
+    [ -f /stage/Server/HytaleServer.aot.config ] && \
+        mv /stage/Server/HytaleServer.aot.config /bin-layer/Server/HytaleServer.aot.config || true; \
     bucketize /stage /buckets "${ASSET_BUCKETS}"; \
     rm -rf /stage; \
-    find /buckets -exec touch --no-dereference -h -d "@${SOURCE_DATE_EPOCH}" {} +
+    find /buckets /bin-layer -exec touch --no-dereference -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 # ---- runtime: base + Java + baked buckets + adapter ----
 FROM ${BASE}
@@ -103,8 +121,8 @@ COPY --from=java /opt/java/openjdk /opt/java/openjdk
 ENV JAVA_HOME=/opt/java/openjdk \
     PATH=/opt/java/openjdk/bin:/usr/local/bin:/usr/bin:/bin
 
-# Asset buckets first: the lower, stable layers (Assets.zip's bucket dedupes
-# wholesale across versions). The count MUST match ASSET_BUCKETS in the fetch stage.
+# Asset buckets first: the lower, stable layers that dedupe across versions. The
+# count MUST match ASSET_BUCKETS in the fetch stage.
 COPY --from=fetch --chown=chandlery:chandlery /buckets/00/ /opt/hytale/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/01/ /opt/hytale/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/02/ /opt/hytale/
@@ -121,9 +139,28 @@ COPY --from=fetch --chown=chandlery:chandlery /buckets/12/ /opt/hytale/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/13/ /opt/hytale/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/14/ /opt/hytale/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/15/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/16/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/17/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/18/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/19/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/20/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/21/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/22/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/23/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/24/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/25/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/26/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/27/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/28/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/29/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/30/ /opt/hytale/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/31/ /opt/hytale/
 COPY --chmod=0755 prepare   /usr/local/lib/chandlery/prepare
 COPY --chmod=0755 stop-hook /usr/local/lib/chandlery/stop
 COPY --chmod=0755 run       /usr/local/bin/hytale-server
+# The server code last: the top layer, the per-build delta (jar + AOT cache).
+# Everything below it — the ~60k unzipped assets — stays put across versions.
+COPY --from=fetch --chown=chandlery:chandlery /bin-layer/Server/ /opt/hytale/Server/
 
 # The pin travels as environment; run locates the baked game.
 ENV HYTALE_VERSION=${HYTALE_VERSION} \

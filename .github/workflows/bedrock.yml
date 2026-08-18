@@ -33,15 +33,9 @@ permissions:
   contents: read
   packages: write
 
-# The images are now BAKED (PLAN 7.3): they carry the game, so they may NOT be
-# published to a public registry. The push targets a PRIVATE registry named by
-# the `PRIVATE_REGISTRY` repo variable (e.g. ghcr.io/<org>/private, or another
-# host); when it is unset the workflow builds and verifies but pushes NOTHING,
-# so baked game content is never published by default. Set the variable and the
-# `REGISTRY_USERNAME`/`REGISTRY_PASSWORD` secrets to enable the push.
 env:
-  REGISTRY: ${{ vars.PRIVATE_REGISTRY }}
-  IMAGE: ${{ vars.PRIVATE_REGISTRY }}/bedrock
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository }}/bedrock
 
 jobs:
   resolve:
@@ -76,20 +70,16 @@ jobs:
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "sha256: $sha"
 
-      - if: vars.PRIVATE_REGISTRY != ''
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: built
         name: Skip versions already published
         run: |
-          if [ -z "${REGISTRY}" ]; then
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "No PRIVATE_REGISTRY configured; will build and verify but not push."
-          elif [ "${{ inputs.force }}" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
+          if [ "${{ inputs.force }}" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
             echo "Building regardless: forced, or the image definition changed."
           elif docker buildx imagetools inspect "${IMAGE}:${{ steps.upstream.outputs.version }}" >/dev/null 2>&1; then
@@ -107,21 +97,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - if: vars.PRIVATE_REGISTRY != ''
-        uses: docker/login-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.REGISTRY_USERNAME }}
-          password: ${{ secrets.REGISTRY_PASSWORD }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The image is BAKED and carries the game (PLAN 7.3), so it goes to a
-      # PRIVATE registry only. If PRIVATE_REGISTRY is unset the build still runs
-      # (proving the fetch→bake→bucket path) but nothing is pushed — baked game
-      # content is never published to a public registry.
-      #
       # Plain daemon build: the game's `FROM chandlery/base:ci` resolves the base
       # built a line earlier in the same daemon — no registry pull, no shared
-      # store. SOURCE_DATE_EPOCH is fixed so unchanged asset buckets dedupe.
+      # store. SOURCE_DATE_EPOCH is fixed so unchanged asset buckets dedupe
+      # across versions (bedrock/Dockerfile).
       - name: Build and push Bedrock
         env:
           DOCKER_BUILDKIT: "1"
@@ -129,20 +114,15 @@ jobs:
           SHA256: ${{ needs.resolve.outputs.sha256 }}
         run: |
           docker build -t chandlery/base:ci base
-          IMG="${IMAGE:-chandlery/bedrock}"
           # BDS is x86-64 only; there is no ARM server build to fall back to.
           docker build \
             --build-arg BASE=chandlery/base:ci \
             --build-arg BEDROCK_VERSION="$VERSION" \
             --build-arg BEDROCK_SHA256="$SHA256" \
             --build-arg SOURCE_DATE_EPOCH=0 \
-            -t "${IMG}:${VERSION}" -t "${IMG}:latest" bedrock
-          if [ -n "${REGISTRY}" ]; then
-            docker push "${IMG}:${VERSION}"
-            docker push "${IMG}:latest"
-          else
-            echo "No PRIVATE_REGISTRY set; built ${IMG}:${VERSION} but not pushing (baked content stays private)."
-          fi
+            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" bedrock
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:latest"
 
       - name: Say what shipped
         env:

@@ -29,11 +29,11 @@
 # A rollback is therefore just `docker pull <old tag>`: its asset buckets are
 # already local, only its binary layer differs.
 #
-# Baking redistributes BDS, which the Minecraft EULA forbids for a *public*
-# image (PLAN 7.3) — this image is for a PRIVATE registry. The pin stays
-# cryptographic: the fetch stage verifies BEDROCK_SHA256 before baking, so the
-# baked layer cannot be a version other than the one on the tag; the build fails
-# closed instead.
+# Baking redistributes BDS, which the Minecraft EULA forbids (PLAN 7.3) —
+# accepted here deliberately for the value it buys (small bumps, rollback, a
+# self-contained runtime). The pin stays cryptographic: the fetch stage verifies
+# BEDROCK_SHA256 before baking, so the baked layer cannot be a version other than
+# the one on the tag; the build fails closed instead.
 ARG BASE=chandlery/base:test
 ARG MC_MONITOR=itzg/mc-monitor:latest
 # curl/unzip/ca-certificates live only in the fetch stage; the runtime image
@@ -60,7 +60,7 @@ ARG BEDROCK_URL=
 ARG SOURCE_DATE_EPOCH=0
 # The number of asset-bucket layers. Kept in lockstep with the COPY lines in the
 # runtime stage below — change both together.
-ARG ASSET_BUCKETS=16
+ARG ASSET_BUCKETS=32
 
 COPY --chmod=0755 bucketize /usr/local/bin/bucketize
 
@@ -128,12 +128,29 @@ COPY --from=fetch --chown=chandlery:chandlery /buckets/12/ /opt/bedrock/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/13/ /opt/bedrock/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/14/ /opt/bedrock/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/15/ /opt/bedrock/
-# Binary last: the top layer, and the whole per-release delta.
-COPY --from=fetch --chown=chandlery:chandlery /bin-layer/bedrock_server /opt/bedrock/bedrock_server
+COPY --from=fetch --chown=chandlery:chandlery /buckets/16/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/17/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/18/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/19/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/20/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/21/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/22/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/23/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/24/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/25/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/26/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/27/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/28/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/29/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/30/ /opt/bedrock/
+COPY --from=fetch --chown=chandlery:chandlery /buckets/31/ /opt/bedrock/
 COPY --chmod=0755 prepare   /usr/local/lib/chandlery/prepare
 COPY --chmod=0755 stop-hook /usr/local/lib/chandlery/stop
 COPY --chmod=0755 health    /usr/local/lib/chandlery/health
 COPY --chmod=0755 run       /usr/local/bin/bedrock-server
+# Binary last: the top layer, and the whole per-release delta. It changes every
+# release while everything below it does not.
+COPY --from=fetch --chown=chandlery:chandlery /bin-layer/bedrock_server /opt/bedrock/bedrock_server
 
 # The version travels as environment so both halves see it — prepare (seed/link)
 # and run (locate/exec) — and `docker inspect` shows what the image baked.

@@ -84,9 +84,11 @@ fi
 
 inspect() { docker run --rm --entrypoint /bin/sh "$IMAGE" -c "$1"; }
 
-it "bakes the server jar and Assets.zip it names, at /opt/hytale"
+it "bakes the server jar and the (unzipped) assets it names, at /opt/hytale"
+# Assets are baked as a directory (the server takes --assets as DIR_OR_ZIP) so
+# they bucket and dedupe; a baked Assets.zip is the accepted fallback.
 assert_equals "yes" "$(inspect '[ -f /opt/hytale/Server/HytaleServer.jar ] &&
-                                 [ -f /opt/hytale/Assets.zip ] && echo yes')" && pass
+                                 { [ -d /opt/hytale/Assets ] || [ -f /opt/hytale/Assets.zip ]; } && echo yes')" && pass
 
 it "records the version in its tag's label and environment"
 assert_equals "${HYTALE_VERSION:?set HYTALE_VERSION}" \

@@ -17,9 +17,13 @@ set -eu
 game=/opt/hytale
 
 jar="$game/Server/HytaleServer.jar"
-assets="$game/Assets.zip"
-[ -f "$jar" ]    || { echo "[hytale] no server jar at $jar; did the prepare hook fetch it?" >&2; exit 70; }
-[ -f "$assets" ] || { echo "[hytale] no Assets.zip at $assets" >&2; exit 70; }
+# Assets are baked unzipped as a directory (the server takes --assets as
+# DIR_OR_ZIP), so each asset buckets and dedupes across versions. Fall back to a
+# baked Assets.zip if a build ever bakes the zip instead.
+assets="$game/Assets"
+[ -d "$assets" ] || assets="$game/Assets.zip"
+[ -f "$jar" ]                        || { echo "[hytale] no server jar at $jar; this image is misbuilt" >&2; exit 70; }
+[ -d "$assets" ] || [ -f "$assets" ] || { echo "[hytale] no assets at $game/Assets(.zip)" >&2; exit 70; }
 
 # The server writes universe/, config.json, logs/, backups/ relative to the
 # working directory; keep that on /data.

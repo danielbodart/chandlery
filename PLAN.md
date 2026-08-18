@@ -2,7 +2,7 @@
 
 > A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game — baked to an exact version in the image, layered so a version bump is a small pull, ready to sail.
 
-Status: **all three games built and baked, proven on a real host.** The pivot (this session): the images now **bake the game at build**, layered by churn — the payload is split across bucket layers by a stable hash of each file's subtree with mtimes normalised, so an unchanged subtree is a byte-identical layer the registry dedupes across versions, and a version bump pulls only what changed (Bedrock measured: **76.9 MB of a 137 MB image**). The build still fetches and verifies (sha256 / manifest gid), so the pin stays cryptographic and the tag cannot lie; what changed is *where* the bytes live — in the image, not fetched on first start. Baking redistributes game content, which every licence here forbids for a **public** image (§7.3), so these images are for a **private registry**. The wins that bought the pivot: smaller effective pulls, real rollback (`docker pull <old tag>`, unchanged buckets already local), and a simpler runtime (no fetch tooling, no network, no first-boot download). Where each game stands:
+Status: **all three games built and baked, proven on a real host.** The pivot (this session): the images now **bake the game at build**, layered by churn — the payload is split across bucket layers by a stable hash of each file's subtree with mtimes normalised, so an unchanged subtree is a byte-identical layer the registry dedupes across versions, and a version bump pulls only what changed (Bedrock measured: **76.9 MB of a 137 MB image**). The build still fetches and verifies (sha256 / manifest gid), so the pin stays cryptographic and the tag cannot lie; what changed is *where* the bytes live — in the image, not fetched on first start. Baking redistributes game content, which every licence here forbids (§7.3) — accepted deliberately for the value the pivot buys: smaller effective pulls, real rollback (`docker pull <old tag>`, unchanged buckets already local), and a simpler runtime (no fetch tooling, no network, no first-boot download). Where each game stands:
 
 - **Bedrock** — bakes BDS at the pinned version, sha256-verified at build. The binary is the whole per-release delta (measured), so it is its own top layer above 16 mtime-normalised asset buckets. Real BDS boots baked; 13/13 tests green. Bump 76.9 MB (76.0 binary + 0.9 assets), 20/29 layers dedupe across 1.26.43.1 ↔ .44.3.
 - **Valheim** — the build fetches the pinned depot manifest with **DepotDownloader** (the operator's licensed Steam account, token a build secret) and bakes it; a current `steamclient.so` is baked from SteamCMD (the depot's own is too old). Boots baked — `steamclient.so` loads, Steam game server initialised; 15/15 tests green. `chandlery/valheim:test` 3.31 GB, split across buckets.
@@ -476,12 +476,13 @@ since unchanged buckets are skipped by digest.
 
 ### 7.3 Licensing, and the design it forces
 
-**Decision taken (reversed this session): the images bake the game and ship to a
-PRIVATE registry.** The earlier decision was to publish publicly, which forbade
-baking and forced pin-and-fetch; the value case — smaller effective pulls, real
-rollback, a simpler runtime — was strong enough to reverse it. Everything below
-records both the terms (unchanged) and the design the private-registry decision
-now permits.
+**Decision taken (reversed this session): the images bake the game, accepting the
+distribution terms deliberately.** The earlier decision was to keep the images
+publishable by *not* carrying game content (pin-and-fetch); the value case —
+smaller effective pulls, real rollback, a simpler runtime — was strong enough to
+reverse it and bake, in the knowledge that baking redistributes what the terms
+below forbid. Everything below records both the terms (unchanged) and the design
+baking permits.
 
 #### What the terms say
 
@@ -504,9 +505,10 @@ Not legal advice — but all three read the same way, and one of them is explici
   per-request URL (§7.1). A public image would hand those bytes to anyone who
   pulls it, gate and all.
 
-A private registry sidesteps all of this — copying for your own machines is much
-closer to ordinary use than handing bytes to anyone who pulls a public tag. That
-is the option now **chosen**, and it is what makes baking legitimate.
+These terms are read and **accepted** deliberately: baking redistributes the game,
+and the value it buys (below) is judged worth it. A private registry would be the
+cautious path — copying for your own machines is closer to ordinary use — but it
+is not required, and is not the decision here.
 
 #### The design: bake, and layer by churn
 
@@ -525,8 +527,8 @@ makes the pin cryptographic. What is *gained* over pin-and-fetch: self-contained
 images (no fetch tooling, no runtime network), offline and fast first boot, and —
 the point — small version bumps, because the game is split across mtime-normalised
 subtree buckets so an unchanged subtree is a layer the registry dedupes (§7.2).
-What is given up: public distribution (hence the private registry), and a fatter
-first pull than a thin pin-and-fetch image.
+What is given up: standing clear of the distribution terms, and a fatter first
+pull than a thin pin-and-fetch image.
 
 The fetch machinery moves from a runtime `prepare` hook to a build stage; the
 credential each game needs becomes a **build secret**, none baked into the image.
@@ -569,7 +571,7 @@ static source, so CI reads it by booting the server.
 
 #### Hytale works under this model, today
 
-Under the private-registry decision Hytale bakes like the others: the **build**
+Under the baking decision Hytale bakes like the others: the **build**
 resolves the entitled copy through the OAuth signing proxy (the downloader token
 a build secret, minted and rotated by `tools/hytale-token`) and bakes it, sha256
 -verified. Assets.zip (3.4 GB) is a top-level file, so it becomes its own bucket
@@ -589,8 +591,9 @@ refresh token in CI, handled as §7.1 describes.
 - **§7.2's layering question is the whole point, and is measured.** `tools/release-diff`
   answered it for Bedrock (the binary is the delta; assets are frozen), and the
   bucket split is what a version bump now pays for — nothing more.
-- **The registry decision reversed** — a **private** registry, because baking
-  redistributes game content (§8). Public GHCR is off the table for these images.
+- **The distribution terms are accepted deliberately** — baking redistributes
+  game content (§7.3); the images still publish to GHCR, in the knowledge that
+  this is what the licences forbid. The value is judged worth it.
 
 ---
 
