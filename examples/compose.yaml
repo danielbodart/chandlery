@@ -65,14 +65,10 @@ services:
 
 networks:
   games:
-    # Bedrock binds an IPv6 socket unconditionally and exits without one,
-    # reporting that its ports are in use — which they are not. Give it IPv6
-    # and that goes away. (Also check the host is not booted with
-    # ipv6.disable=1, which no container setting can work around.)
-    enable_ipv6: true
-    ipam:
-      config:
-        - subnet: fd00:cha:d1e5::/64
+    # Nothing special needed. Bedrock opens an IPv6 socket, but any ordinary
+    # kernel provides one; you only hit trouble on a host booted with
+    # ipv6.disable=1, which no compose setting can work around.
+    {}
 
 volumes:
   bedrock-data:

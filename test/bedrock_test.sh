@@ -59,15 +59,16 @@ else
 fi
 rm -rf "$world"
 
-it "explains the real problem when the container has no IPv6"
-# BDS binds an IPv6 socket unconditionally and, failing, blames its ports.
+it "explains itself on a kernel with no IPv6 support"
+# BDS opens an IPv6 socket and, failing, blames its ports. We warn rather than
+# refuse — an IPv4-only host is fine, and only ipv6.disable=1 actually breaks it.
 if [ -e /proc/net/if_inet6 ]; then
-    printf 'skipped (this host has IPv6)\n'
+    printf 'skipped (this kernel has IPv6 support)\n'
     TESTS_RUN=$((TESTS_RUN - 1))
 else
     out=$(docker run --rm "$IMAGE" 2>&1 || true)
-    assert_contains "$out" "no IPv6 in this container" \
-        && refute_contains "$out" "may be in use by another process" \
+    assert_contains "$out" "no IPv6 support at all" \
+        && assert_contains "$out" "IPv6 connectivity is NOT required" \
         && pass
 fi
 

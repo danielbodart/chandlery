@@ -20,13 +20,16 @@ for f in server.properties allowlist.json permissions.json; do
     fi
 done
 
-# BDS binds an IPv6 socket unconditionally and, when it cannot, reports
-# "Port [19132] may be in use by another process" and exits — which sends you
-# hunting for a port conflict that does not exist. Say what is actually wrong.
+# BDS opens an IPv6 socket regardless of whether anything routes over it. That
+# is fine nearly everywhere — an IPv4-only host still has IPv6 *support* in the
+# kernel. It only breaks where IPv6 has been compiled out or disabled outright
+# (ipv6.disable=1), and then BDS reports "Port [19132] may be in use by another
+# process" and exits, which sends you hunting a conflict that does not exist.
+# Warn, do not refuse: the server may well start, and guessing wrong here would
+# be worse than the confusing message.
 if [ ! -e /proc/net/if_inet6 ]; then
-    log "ERROR: no IPv6 in this container, and BDS requires it."
-    log "ERROR: it will exit claiming its ports are in use. They are not."
-    log "ERROR: enable IPv6 on the host (check for ipv6.disable=1 on the kernel"
-    log "ERROR: command line) and for this container's network."
-    exit 78
+    log "WARNING: this kernel has no IPv6 support at all (no /proc/net/if_inet6)."
+    log "WARNING: BDS opens an IPv6 socket, and if it cannot it exits saying its"
+    log "WARNING: ports are in use. They are not — check for ipv6.disable=1 on the"
+    log "WARNING: host's kernel command line. IPv6 connectivity is NOT required."
 fi

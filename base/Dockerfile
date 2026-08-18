@@ -23,17 +23,19 @@ RUN set -eux; \
             --home-dir /data --no-create-home --shell /usr/sbin/nologin \
             "${CHANDLERY_USER}"; \
 # /run/chandlery is created at build because the server user cannot mkdir in /run.
-    mkdir -p /data /run/chandlery /usr/local/lib/chandlery; \
-    chown "${CHANDLERY_UID}:${CHANDLERY_GID}" /data /run/chandlery
+    mkdir -p /data /cache /run/chandlery /usr/local/lib/chandlery; \
+    chown "${CHANDLERY_UID}:${CHANDLERY_GID}" /data /cache /run/chandlery
 
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/chandlery-entrypoint
 COPY --chmod=0755 console.sh    /usr/local/bin/chandlery-console
 
 ENV CHANDLERY_USER=${CHANDLERY_USER}
 
-# The world lives here and survives a container recreate; the game binaries do
-# not live here, they live in the image, which is the whole idea.
-VOLUME ["/data"]
+# /data is the world and config — the stuff worth backing up.
+# /cache is the game payload, fetched and verified on first start (see PLAN 7.3).
+# Keeping them apart means a backup of /data is not 350MB of game binaries, and
+# a container recreate does not re-download.
+VOLUME ["/data", "/cache"]
 WORKDIR /data
 USER ${CHANDLERY_USER}
 

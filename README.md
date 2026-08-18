@@ -30,7 +30,7 @@ There is a fuller [example compose file](./examples/compose.yaml) with both game
 Two things worth knowing before the first run:
 
 - **`/data` on a bind mount must be yours.** A named volume just works. A bind mount arrives owned by whoever owns the host directory — `chown 1000:1000` it, or start the container once as root and it will adopt it. Either way it says so rather than failing quietly.
-- **Bedrock needs IPv6 in its container.** It binds an IPv6 socket unconditionally, and without one it exits complaining that its ports are in use. They are not. The image checks for this and tells you the truth; the compose example enables it.
+- **Bedrock wants a kernel with IPv6 support** — not IPv6 connectivity. An IPv4-only host is fine. It only matters if IPv6 is disabled outright (`ipv6.disable=1`), where BDS exits complaining its ports are in use when they are not; the image warns about that case.
 
 Talk to a running server with `docker exec chandlery-bedrock chandlery-console say hello`.
 

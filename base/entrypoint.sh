@@ -36,8 +36,8 @@ if [ "$(id -u)" = 0 ] && [ "${CHANDLERY_DROP_PRIVS:-1}" = 1 ]; then
     user="${CHANDLERY_USER:-chandlery}"
     uid="$(id -u "$user")"
     gid="$(id -g "$user")"
-    log "running as root; adopting /data and dropping to $user ($uid:$gid)"
-    chown "$uid:$gid" /data "$RUNTIME_DIR" 2>/dev/null || true
+    log "running as root; adopting /data and /cache, dropping to $user ($uid:$gid)"
+    chown "$uid:$gid" /data /cache "$RUNTIME_DIR" 2>/dev/null || true
     exec setpriv --reuid "$uid" --regid "$gid" --clear-groups "$0" "$@"
 fi
 
@@ -45,13 +45,14 @@ fi
 # bind mount does not: it arrives owned by whoever owns the host directory,
 # and the server cannot write its world. Say so, with the fix, rather than
 # letting the game fail later and less clearly.
-if [ ! -w /data ]; then
-    log "ERROR: /data is not writable by $(id -un) (uid $(id -u))."
-    log "ERROR: it is owned by uid $(stat -c '%u' /data 2>/dev/null || echo '?')."
+for dir in /data /cache; do
+    [ -w "$dir" ] && continue
+    log "ERROR: $dir is not writable by $(id -un) (uid $(id -u))."
+    log "ERROR: it is owned by uid $(stat -c '%u' "$dir" 2>/dev/null || echo '?')."
     log "ERROR: either chown it on the host:  chown -R $(id -u):$(id -g) <host dir>"
-    log "ERROR: or start the container as root once, and it will adopt /data itself."
+    log "ERROR: or start the container as root once, and it will adopt it itself."
     exit 77
-fi
+done
 
 if [ -x "$PREPARE_HOOK" ]; then
     log "preparing"

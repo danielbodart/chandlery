@@ -130,18 +130,20 @@ Set a generous `stop_grace_period` in the shipped compose so a large world save 
 
 ---
 
-### Bedrock needs IPv6, and lies about why
+### Bedrock opens an IPv6 socket, and lies when it cannot
 
-Found while building: BDS binds an IPv6 socket unconditionally. In a container
-without IPv6 it fails and reports
+BDS creates an IPv6 socket whether or not anything routes over it. When it
+cannot, it reports
 
 > `Port [19132] may be in use by another process`
 
-which sends you hunting a port conflict that does not exist. Hosts booted with
-`ipv6.disable=1`, and Docker networks without IPv6, both trigger it. The image's
-prepare hook now pre-flights this and says what is actually wrong. Worth
-carrying into the homelab's compose: the Bedrock containers need IPv6 in their
-network.
+and exits, which sends you hunting a port conflict that does not exist.
+
+**This needs IPv6 *support* in the kernel, not IPv6 connectivity.** An IPv4-only
+host is fine — the homelab runs BDS on IPv4 today. It only bites where IPv6 has
+been compiled out or switched off outright (`ipv6.disable=1`), which is what the
+build sandbox did and which is unusual. The prepare hook warns about that case
+rather than refusing to start, since the message is the useful part.
 
 ---
 
@@ -150,10 +152,11 @@ network.
 Both games' *live* behaviour is unproven here, for one shared reason: the
 development sandbox's kernel has IPv6 disabled outright.
 
-- **Bedrock** binds an IPv6 socket unconditionally and exits without one, so
-  BDS has never actually been started. Everything around it is tested — the
-  bake, the layout, the health probe against a fake RakNet responder — but the
-  first real run is still ahead.
+- **Bedrock** opens an IPv6 socket and exits when the kernel has none, so BDS
+  has never actually been started there. This is a quirk of that sandbox, not a
+  requirement of Bedrock: it runs on the IPv4 homelab today. Everything around
+  it is tested — the layout, the health probe against a fake RakNet responder —
+  but the first real run under Chandlery is still ahead.
 - **Valheim** cannot even be *built* there: SteamCMD fails with
   `EAFNOSUPPORT` creating its IPv6 socket, so the download never begins. The
   adapter is tested instead against a fake server carrying the real scripts
