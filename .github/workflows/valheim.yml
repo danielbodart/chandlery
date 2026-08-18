@@ -39,11 +39,6 @@ permissions:
   packages: write
 
 env:
-  # TODO (baked CI, not yet wired/tested): the fetch now happens at BUILD, so
-  # STEAM_USERNAME must pass as a --build-arg and the DepotDownloader token as a
-  # build secret (--secret id=steam-token, from base64 STEAM_LOGIN_TOKEN decoded
-  # to a file), not as runtime `-e` to a staging container. The game version can
-  # then be read by running the built image once.
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/${{ github.repository }}/valheim
 
@@ -116,11 +111,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Reading the game version means downloading and booting the server once.
-      # Build a staging image, run it with the licensed Steam credential so it
-      # fetches the depot and boots far enough to log its version, read that, then
-      # rebuild tagged with it. The final image carries no game content either way
-      # — the version only sets a label — so the second build is nearly free.
+      # The image bakes the game, so the fetch runs at BUILD: STEAM_USERNAME is a
+      # build-arg, and STEAM_LOGIN_TOKEN (base64 of the DepotDownloader
+      # account.config) is decoded to a file and mounted as the steam-token build
+      # secret — neither rides into the image. Reading the game version still means
+      # booting the server once, but now the baked staging image already carries
+      # the game, so the run needs no Steam credential. The version-tagged rebuild
+      # hits BuildKit's cache on the (identical) fetch stage, so it is nearly free.
       - name: Build, read the version, and push Valheim
         env:
           DOCKER_BUILDKIT: "1"
@@ -130,6 +127,10 @@ jobs:
           STEAM_LOGIN_TOKEN: ${{ secrets.STEAM_LOGIN_TOKEN }}
         run: |
           set -euo pipefail
+          # The account.config token, owner-only, never on a command line.
+          umask 077
+          printf '%s' "$STEAM_LOGIN_TOKEN" | base64 -d > "$RUNNER_TEMP/steam-token"
+
           docker build -t chandlery/base:ci base
           # The server is an x86-64 build; there is no ARM one.
           docker build \
@@ -137,14 +138,13 @@ jobs:
             --build-arg VALHEIM_VERSION=staging \
             --build-arg VALHEIM_BUILD_ID="$BUILD_ID" \
             --build-arg VALHEIM_MANIFEST_GID="$MANIFEST_GID" \
+            --build-arg STEAM_USERNAME="$STEAM_USERNAME" \
+            --build-arg SOURCE_DATE_EPOCH=0 \
+            --secret id=steam-token,src="$RUNNER_TEMP/steam-token" \
             -t valheim:staging valheim
 
           echo "Running the staging server to read the game version..."
-          cid=$(docker run -d \
-            -e VALHEIM_PASSWORD=chandleryci \
-            -e STEAM_USERNAME="$STEAM_USERNAME" \
-            -e STEAM_LOGIN_TOKEN="$STEAM_LOGIN_TOKEN" \
-            valheim:staging)
+          cid=$(docker run -d -e VALHEIM_PASSWORD=chandleryci valheim:staging)
           version=""
           for _ in $(seq 1 60); do
             sleep 10
@@ -161,7 +161,11 @@ jobs:
             --build-arg VALHEIM_VERSION="$version" \
             --build-arg VALHEIM_BUILD_ID="$BUILD_ID" \
             --build-arg VALHEIM_MANIFEST_GID="$MANIFEST_GID" \
+            --build-arg STEAM_USERNAME="$STEAM_USERNAME" \
+            --build-arg SOURCE_DATE_EPOCH=0 \
+            --secret id=steam-token,src="$RUNNER_TEMP/steam-token" \
             -t "${IMAGE}:${version}" -t "${IMAGE}:latest" valheim
+          rm -f "$RUNNER_TEMP/steam-token"
           # Push :latest last so the registry's default view lands on it.
           docker push "${IMAGE}:${version}"
           docker push "${IMAGE}:latest"
