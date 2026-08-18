@@ -166,58 +166,84 @@ homelab migration in §8.6.
 - **Version marker** for CI "did it change" — newest pushed tag vs a state file.
 - Do we generate per-game Dockerfiles from a template (docker-gameserver style) or hand-write three? Three is fine now; template if the count grows.
 
-### 7.1 Hytale: what the OAuth question turned out to be
+### 7.1 Hytale: the runtime is solved, the download is not
 
-Investigated against primary sources — the official downloader
-(`https://downloader.hytale.com/hytale-downloader.zip`, build `2026.05.13`,
-its `QUICKSTART.md` and its actual flag set). Hypixel's own *Server Provider
-Authentication Guide* is the one document that could change the answer and it
-sits behind Cloudflare, unreadable from here.
+Investigated against primary sources: the official downloader
+(`https://downloader.hytale.com/hytale-downloader.zip`, build `2026.05.13`, its
+`QUICKSTART.md` and actual flag set) and Hypixel's
+[Server Provider Authentication Guide](https://support.hytale.com/hc/en-us/articles/45328341414043-Server-Provider-Authentication-Guide).
 
-**There are two separate OAuth flows, and only one of them is a problem.**
+**There are two separate OAuth flows. One is solved by design, the other is
+still a blocker — and it is not the one this plan expected.**
 
-*The server's own login is not the blocker.* A Hytale server authenticates
-itself (`/auth login device`) before it will accept players. That sounds fatal
-for hands-off deployment, but the credentials persist on the data volume and
-refresh themselves, so once a server has logged in, restarts — and image swaps
-— need no login at all. Tidewaiter's half of the loop is fine.
+#### The server's own authentication: solved, and it suits us
 
-*The download is the blocker.* The downloader offers exactly these flags:
+Hypixel documents a first-class provider path, and it is better for Chandlery
+than persisting credentials on the volume. A provisioning system authenticates
+**once** by device code, keeps the refresh token centrally, and mints per-server
+sessions:
+
+1. `POST oauth2/device/auth` (client `hytale-server`, scopes
+   `openid offline auth:server`) → device code, once, by a human.
+2. `GET account-data.hytale.com/my-account/get-profiles` → profile UUID.
+3. `POST sessions.hytale.com/game-session/new` → `sessionToken` + `identityToken`.
+4. Start the server with `--session-token` / `--identity-token`, or the
+   equivalent `HYTALE_SERVER_SESSION_TOKEN` / `HYTALE_SERVER_IDENTITY_TOKEN`
+   environment variables.
+
+That is **token passthrough**, and it means a Hytale image carries no
+credentials at all and needs no credential file on `/data` — the deployer
+injects two environment variables, exactly the way Valheim takes its password.
+A `prepare` hook would check for them and say so plainly when they are missing.
+The server refreshes its own game session 5 minutes before the hourly expiry,
+falling back to an OAuth refresh, so a running server stays authenticated
+indefinitely; re-authentication is only needed after 30 days offline. One
+account supports 500 concurrent server sessions, far past a homelab.
+
+Note the rotation rule, because it bites elsewhere: **each OAuth refresh
+invalidates the previous refresh token**. Any store of one has to be written
+back, never merely read.
+
+#### The download: still no machine credential
+
+The guide does not change this. For server files it points at the same Hytale
+Downloader CLI, whose entire flag set is:
 
 ```
 -check-update  -credentials-path  -download-path  -list-patchlines
 -patchline     -print-version     -skip-update-check  -version
 ```
 
-There is **no service account, no client-credentials grant, no token flag**.
-The only automation hook is `-credentials-path`, pointing at a file produced by
-an interactive device login against *a personal Hytale account*. Worse, the
-tool rewrites that file as tokens refresh, and its own guide warns that an
-automated caller must retain the updated file — so a CI secret would have to be
-written back after every run.
+**No service account, no client-credentials grant, no token flag.** The only
+automation hook is `-credentials-path`, pointing at a file produced by an
+interactive device login against *a personal Hytale account*, which the tool
+rewrites as tokens rotate.
 
-And `-print-version` needs the same credential. That is the sharp end: **we
-cannot even detect a new Hytale release unattended**, whichever way the
-download happens. Rebuild-on-release, not just bake-at-build, is what is
-actually blocked.
+And `-print-version` needs that same credential. That is the sharp end: **we
+cannot detect a new Hytale release unattended**, however the download happens.
+What is blocked is rebuild-on-release, not bake-at-build.
 
-**The options, none of which are mine to pick:**
+#### The options, none of which are mine to pick
 
 | | What it costs |
 | --- | --- |
-| **A. Ask Hypixel for a provider credential** | Best outcome, and the *Server Provider Authentication Guide* suggests such a path may exist. Costs a support conversation and an unknown wait. |
-| **B. A personal account's credentials file as a CI secret** | Works today. Puts a personal Hytale credential in CI, needs the workflow to write the refreshed token back to the secret after each run, and is worth checking against Hytale's terms before doing. |
+| **A. Ask Hypixel whether a machine credential exists for the *downloader*** | Now a narrow, specific question — the runtime side is already answered, so this is the only thing left to ask. Costs a support conversation and an unknown wait. |
+| **B. A personal account's credentials file as a CI secret** | Works today. Puts a personal Hytale credential in CI, and the workflow must write the rotated token back to the secret after every run or the next run is locked out. Worth checking against Hytale's terms first. |
 | **C. Runtime download**, as every existing Hytale image does | Gives up image = version for this one game — the thing this project exists for. |
-| **D. Bake by hand**: a human runs the build locally with their own credentials and pushes the image | Keeps image = version, gives up *automatic on release*. Cheapest honest option while A is pending. |
+| **D. Bake by hand**: a human runs the build locally with their own credentials and pushes the image | Keeps image = version and, combined with token passthrough above, yields a fully working credential-free image that Tidewaiter can swap freely. Gives up only *automatic on release*. |
 
-Recommendation: pursue **A**, run **D** in the meantime. Do not build a Hytale
-image until this is settled — the choice changes what the image is.
+Recommendation: **D now, A alongside it.** D is no longer a stopgap — with the
+runtime solved by token passthrough, a hand-baked Hytale image is a complete,
+coherent Chandlery image; the single thing it lacks is noticing a release by
+itself. Only A can restore that, and only if such a credential exists.
 
-**Other facts worth carrying forward** (secondary sources, unverified without
-an account): the server is `HytaleServer.jar` + `Assets.zip` on **Java 25**,
-wants ~4 GB RAM, and listens on **UDP 5520 (QUIC)** — not the plan's assumed
-`conntrack`-friendly shape, and worth re-checking against Tidewaiter's
-detectors. The server runs on arm64, but the downloader ships amd64 only.
+**Other facts worth carrying forward:** the server is `HytaleServer.jar` +
+`Assets.zip` on **Java 25**, wants ~4 GB RAM, and listens on **UDP 5520
+(QUIC)** — worth re-checking against Tidewaiter's detectors. It runs on arm64,
+though the downloader ships amd64 only. It has a console (`/auth status`,
+`/auth logout`), which suits the base skeleton's console FIFO. Sessions should
+be terminated on shutdown (`DELETE sessions.hytale.com/game-session`), so
+confirm whether the server does that itself before writing a stop hook.
 
 ---
 
@@ -280,7 +306,7 @@ history accumulate for free.
 2. **Bedrock**: Mojang adapter (baked, drop symbols), stdin-`stop` hook, RakNet health. Replace the LinuxGSM Bedrock servers first (the ones we fought this month).
 3. **Bedrock CI**: rebuild-on-Mojang-release, tag=version, push.
 4. **Valheim**: SteamCMD adapter (896660), SIGINT stop, A2S health, CI on buildid.
-5. **Hytale**: *blocked on a decision, not on work* — see §7.1. The download and even the version check need a personal-account OAuth credential; pick an option there before any Hytale image is written.
+5. **Hytale**: *blocked on a decision, not on work* — see §7.1. Runtime auth is solved (token passthrough, no credentials in the image); the download and version check still need a personal-account OAuth credential. Pick an option there before any Hytale image is written.
 6. **Ship + adopt**: publish images, migrate the homelab (`danielbodart/server`) off LinuxGSM one game at a time — configuring Tidewaiter per its own docs, deploy-side (§5).
 
 ## 9. Non-goals (v1)
