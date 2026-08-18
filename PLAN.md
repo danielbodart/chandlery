@@ -204,43 +204,73 @@ Note the rotation rule, because it bites elsewhere: **each OAuth refresh
 invalidates the previous refresh token**. Any store of one has to be written
 back, never merely read.
 
-#### The download: still no machine credential
+#### The download: not blocked after all
 
-The guide does not change this. For server files it points at the same Hytale
-Downloader CLI, whose entire flag set is:
+An earlier draft of this section called the download blocked because the CLI has
+no `client_credentials` grant. That was the wrong test. **Device code *is* the
+automation story** — Hypixel's own provider guide opens with "obtain tokens once,
+use the Device Code Flow to get a `refresh_token`". There is no separate machine
+credential because none is intended: you log in by hand once, and hold the
+refresh token forever.
 
+And nothing obliges us to use their CLI. The binary hands us the whole map, and
+the flow answers to a plain `curl`:
+
+```console
+$ curl -X POST https://oauth.accounts.hytale.com/oauth2/device/auth \
+    -d client_id=hytale-downloader -d "scope=openid offline auth:downloader"
+{"device_code":"ory_dc_...","user_code":"fkYMjXa6",
+ "verification_uri":"https://oauth.accounts.hytale.com/oauth2/device/verify",
+ "expires_in":599,"interval":5}
 ```
--check-update  -credentials-path  -download-path  -list-patchlines
--patchline     -print-version     -skip-update-check  -version
-```
 
-**No service account, no client-credentials grant, no token flag.** The only
-automation hook is `-credentials-path`, pointing at a file produced by an
-interactive device login against *a personal Hytale account*, which the tool
-rewrites as tokens rotate.
+Verified: HTTP 200, a real code. So the build can drive
+`oauth2/token` → `account-data.hytale.com/version/<patchline>.json` →
+signed asset URL itself, and own its token persistence rather than inheriting
+the CLI's credentials-file behaviour. Both the version check *and*
+rebuild-on-release are back on the table.
 
-And `-print-version` needs that same credential. That is the sharp end: **we
-cannot detect a new Hytale release unattended**, however the download happens.
-What is blocked is rebuild-on-release, not bake-at-build.
+What survives from the pessimistic version is one operational hazard, not a
+blocker: **the refresh token rotates on every use and the old one dies**. CI has
+to write the new token back to its secret before doing anything else with it, or
+an interrupted run locks the pipeline out until a human repeats the device login.
+A concurrency group is mandatory — two runs refreshing at once and one of them
+loses. That is a thing to engineer carefully, and it is well-trodden.
+
+#### The question that actually remains: redistribution
+
+Every Hytale download is gated behind a per-account OAuth flow and a signed,
+per-request URL. An image on a public registry hands those bytes to anyone who
+pulls it, gate and all. That is a licensing question rather than a technical one,
+and it is the real obstacle to a public `chandlery/hytale` — not the auth.
+
+It deserves asking of the other two as well, before this project's images go
+anywhere public. It may be exactly why itzg and LinuxGSM both download at
+runtime rather than baking: doing so keeps the redistribution with the
+publisher and out of the image. Baking is what makes this project worth
+building, so the answer matters. It is a decision for a human, and possibly one
+for Hypixel's support team.
+
+A private registry sidesteps it entirely, and the homelab in §8.6 is private.
 
 #### Verified against the binary and the live endpoints
 
 The downloader ships unstripped with debug info, so this is not guesswork.
 
-- **The only OAuth grants compiled into it are `device_code` and
-  `refresh_token`.** No `client_credentials`, no `authorization_code`. Whatever
-  a provider credential would look like, this tool cannot currently use one.
-- The endpoints it talks to: `oauth.accounts.hytale.com/oauth2/{auth,
-  device/auth,token}` under scope `auth:downloader`; `account-data.hytale.com`
-  for `my-account/get-patchlines` and `version/<patchline>.json`; and game
-  assets via a signed URL it requests per download.
-- **Release detection is authenticated — confirmed by asking.**
+- Its OAuth client is `hytale-downloader`, scopes `openid offline
+  auth:downloader`, and the only grants compiled in are `device_code` and
+  `refresh_token` — which, per above, is all the flow needs.
+- The endpoints: `oauth.accounts.hytale.com/oauth2/{auth,device/auth,token}`;
+  `account-data.hytale.com` for `my-account/get-patchlines` and
+  `version/<patchline>.json`; game assets via a signed URL requested per
+  download.
+- **Everything about the game is authenticated.**
   `account-data.hytale.com/my-account/get-patchlines` answers
-  `403 invalid authorization header` unauthenticated. The one endpoint that
-  *is* public, `downloader.hytale.com/version.json`, reports the version of
-  **the downloader itself** (`{"latest": "2026.05.13-99ade04"}`), not the
-  game's. So there is no unauthenticated way to notice a Hytale release, and
-  option A below is the only thing that could create one.
+  `403 invalid authorization header` unauthenticated. The one public endpoint,
+  `downloader.hytale.com/version.json`, reports the version of **the downloader
+  itself** (`{"latest": "2026.05.13-99ade04"}`), not the game's. So a token is
+  needed even to notice a release — but a token is exactly what the device flow
+  gives us.
 - The published archive is
   `sha256 9f6939cce346d2ad09490728bbd4b8a5bbe5cb3fd7f3934f2b52e3f2fa0b0aaf`
   (build `2026.05.13-99ade04`), byte-identical to a copy downloaded
@@ -248,19 +278,18 @@ The downloader ships unstripped with debug info, so this is not guesswork.
 - Also present in the binary: an `account-data.arcanitegames.ca` host string,
   alongside the hytale.com one. Noted, not investigated.
 
-#### The options, none of which are mine to pick
+#### Where that leaves it
 
-| | What it costs |
+| | Status |
 | --- | --- |
-| **A. Ask Hypixel whether a machine credential exists for the *downloader*** | Now a narrow, specific question — the runtime side is already answered, so this is the only thing left to ask. But note the tool supports no grant that would use one, so this is a feature request as much as a credential request. Costs a support conversation and an unknown wait. |
-| **B. A personal account's credentials file as a CI secret** | Works today. Puts a personal Hytale credential in CI, and the workflow must write the rotated token back to the secret after every run or the next run is locked out. Worth checking against Hytale's terms first. |
-| **C. Runtime download**, as every existing Hytale image does | Gives up image = version for this one game — the thing this project exists for. |
-| **D. Bake by hand**: a human runs the build locally with their own credentials and pushes the image | Keeps image = version and, combined with token passthrough above, yields a fully working credential-free image that Tidewaiter can swap freely. Gives up only *automatic on release*. |
+| Server runtime auth | **Solved.** Token passthrough; the image carries no credentials. |
+| Downloading and version-checking | **Solved in principle.** One device login by hand, then a rotating refresh token in CI. We write the client; the CLI is optional. |
+| Publishing publicly | **Open, and not technical.** Redistribution of gated assets — ask before pushing to Docker Hub. |
+| Clean shutdown | **Open.** No documented stop command; needs establishing on a live server. |
 
-Recommendation: **D now, A alongside it.** D is no longer a stopgap — with the
-runtime solved by token passthrough, a hand-baked Hytale image is a complete,
-coherent Chandlery image; the single thing it lacks is noticing a release by
-itself. Only A can restore that, and only if such a credential exists.
+Recommendation: build it for a **private** registry, where only the last row
+blocks anything. Settle redistribution before any public push — and note it
+applies to Bedrock and Valheim too.
 
 #### What the image looks like, once the download question is settled
 
@@ -369,7 +398,7 @@ history accumulate for free.
 2. **Bedrock**: Mojang adapter (baked, drop symbols), stdin-`stop` hook, RakNet health. Replace the LinuxGSM Bedrock servers first (the ones we fought this month).
 3. **Bedrock CI**: rebuild-on-Mojang-release, tag=version, push.
 4. **Valheim**: SteamCMD adapter (896660), SIGINT stop, A2S health, CI on buildid.
-5. **Hytale**: *blocked on a decision, not on work* — see §7.1. Runtime auth is solved (token passthrough, no credentials in the image); the download and version check still need a personal-account OAuth credential. Pick an option there before any Hytale image is written.
+5. **Hytale**: buildable — see §7.1. Runtime auth is solved (token passthrough, no credentials in the image) and the download needs one device login by hand, then a rotating refresh token. Open before *publishing*: whether baking gated assets into a public image is redistribution (§7.1), which applies to Bedrock and Valheim too.
 6. **Ship + adopt**: publish images, migrate the homelab (`danielbodart/server`) off LinuxGSM one game at a time — configuring Tidewaiter per its own docs, deploy-side (§5).
 
 ## 9. Non-goals (v1)
