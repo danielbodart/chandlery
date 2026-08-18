@@ -58,10 +58,12 @@ elif [ ! -f "$TOKEN_FILE" ]; then
     exit 66
 fi
 
-mkdir -p "$(dirname "$TOKEN_FILE")"
+# The store holds a credential; keep its directory and lock owner-only too.
+( umask 077; mkdir -p "$(dirname "$TOKEN_FILE")" )
 
 # Serialise everything below: the rotation is a read-modify-write on the store,
 # and two of them at once means one refresh token is spent and lost.
+( umask 077; : > "$TOKEN_FILE.lock" )
 exec 9>"$TOKEN_FILE.lock"
 flock 9
 
@@ -78,10 +80,15 @@ fi
 
 # --- refresh: spend the refresh token for a new pair -----------------------
 log "refreshing access token"
+# Pass the refresh token from an owner-only file, never on curl's command line:
+# argv is world-readable via ps and /proc, and this is a bearer credential.
+rtfile=$(mktemp); chmod 600 "$rtfile"
+printf '%s' "$refresh_token" > "$rtfile"
 resp=$(curl -fsS --http1.1 --retry 3 --retry-all-errors -X POST "$TOKEN_URL" \
-        --data-urlencode "client_id=$CLIENT_ID" \
-        --data-urlencode "grant_type=refresh_token" \
-        --data-urlencode "refresh_token=$refresh_token")
+        -d "client_id=$CLIENT_ID" \
+        -d "grant_type=refresh_token" \
+        --data-urlencode "refresh_token@$rtfile") || { rm -f "$rtfile"; log "token refresh failed"; exit 65; }
+rm -f "$rtfile"
 
 new_access=$(printf '%s' "$resp" | jq -r '.access_token // empty')
 new_refresh=$(printf '%s' "$resp" | jq -r '.refresh_token // empty')
