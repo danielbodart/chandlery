@@ -223,11 +223,36 @@ And `-print-version` needs that same credential. That is the sharp end: **we
 cannot detect a new Hytale release unattended**, however the download happens.
 What is blocked is rebuild-on-release, not bake-at-build.
 
+#### Verified against the binary and the live endpoints
+
+The downloader ships unstripped with debug info, so this is not guesswork.
+
+- **The only OAuth grants compiled into it are `device_code` and
+  `refresh_token`.** No `client_credentials`, no `authorization_code`. Whatever
+  a provider credential would look like, this tool cannot currently use one.
+- The endpoints it talks to: `oauth.accounts.hytale.com/oauth2/{auth,
+  device/auth,token}` under scope `auth:downloader`; `account-data.hytale.com`
+  for `my-account/get-patchlines` and `version/<patchline>.json`; and game
+  assets via a signed URL it requests per download.
+- **Release detection is authenticated — confirmed by asking.**
+  `account-data.hytale.com/my-account/get-patchlines` answers
+  `403 invalid authorization header` unauthenticated. The one endpoint that
+  *is* public, `downloader.hytale.com/version.json`, reports the version of
+  **the downloader itself** (`{"latest": "2026.05.13-99ade04"}`), not the
+  game's. So there is no unauthenticated way to notice a Hytale release, and
+  option A below is the only thing that could create one.
+- The published archive is
+  `sha256 9f6939cce346d2ad09490728bbd4b8a5bbe5cb3fd7f3934f2b52e3f2fa0b0aaf`
+  (build `2026.05.13-99ade04`), byte-identical to a copy downloaded
+  independently — worth pinning if a build ever shells out to it.
+- Also present in the binary: an `account-data.arcanitegames.ca` host string,
+  alongside the hytale.com one. Noted, not investigated.
+
 #### The options, none of which are mine to pick
 
 | | What it costs |
 | --- | --- |
-| **A. Ask Hypixel whether a machine credential exists for the *downloader*** | Now a narrow, specific question — the runtime side is already answered, so this is the only thing left to ask. Costs a support conversation and an unknown wait. |
+| **A. Ask Hypixel whether a machine credential exists for the *downloader*** | Now a narrow, specific question — the runtime side is already answered, so this is the only thing left to ask. But note the tool supports no grant that would use one, so this is a feature request as much as a credential request. Costs a support conversation and an unknown wait. |
 | **B. A personal account's credentials file as a CI secret** | Works today. Puts a personal Hytale credential in CI, and the workflow must write the rotated token back to the secret after every run or the next run is locked out. Worth checking against Hytale's terms first. |
 | **C. Runtime download**, as every existing Hytale image does | Gives up image = version for this one game — the thing this project exists for. |
 | **D. Bake by hand**: a human runs the build locally with their own credentials and pushes the image | Keeps image = version and, combined with token passthrough above, yields a fully working credential-free image that Tidewaiter can swap freely. Gives up only *automatic on release*. |
