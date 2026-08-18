@@ -15,14 +15,13 @@ log() { printf '[bedrock] %s\n' "$*" >&2; }
 
 zip="$staging/.bds.zip"
 log "downloading Bedrock $BEDROCK_VERSION from $url"
-# Mojang's CDN rate-limits and answers 503 under load; a first boot that failed
-# on a transient blip would look exactly like a broken release.
-# --http1.1: the CDN (and egress proxies in front of it) drop HTTP/2 streams on
-# a transfer this size with "stream not closed cleanly", which no retry recovers
-# because the connection keeps re-negotiating h2. A 104 MB binary has nothing to
-# gain from multiplexing anyway.
-curl -fsSL --http1.1 --retry 5 --retry-delay 5 --retry-all-errors --retry-max-time 300 \
-     -A "chandlery (+https://github.com/danielbodart/chandlery)" -o "$zip" "$url"
+# The User-Agent matters, and not obviously: Mojang's Azure CDN kills the HTTP/2
+# stream ("stream not closed cleanly: INTERNAL_ERROR") for a UA it dislikes —
+# curl's default, and, as measured, any UA carrying spaces or parentheses. A
+# plain token UA gets a clean 200 over HTTP/2 with no other tricks.
+# (itzg/docker-minecraft-bedrock-server#458.) Retries cover the CDN's real 503s.
+curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --retry-max-time 300 \
+     -A chandlery/bedrock -o "$zip" "$url"
 
 if [ -n "${BEDROCK_SHA256:-}" ]; then
     log "verifying sha256"

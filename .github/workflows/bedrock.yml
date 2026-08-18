@@ -60,11 +60,12 @@ jobs:
           # that flaps or truncates mid-build; it is not a signature, because
           # Mojang does not publish one.
           url="https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-${version}.zip"
-          # --http1.1: Mojang's CDN drops HTTP/2 streams on a transfer this size
-          # ("stream not closed cleanly"), which no retry recovers. Same reason
-          # the runtime fetch forces it.
-          curl -fsSL --http1.1 --retry 5 --retry-delay 5 --retry-all-errors --retry-max-time 300 \
-               -A "chandlery (+https://github.com/${{ github.repository }})" -o bds.zip "$url"
+          # Mojang's Azure CDN kills the HTTP/2 stream for a User-Agent it does
+          # not like (curl's default, or one with spaces/parens); a plain token
+          # UA gets a clean 200. Same fix the runtime fetch uses.
+          # itzg/docker-minecraft-bedrock-server#458.
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --retry-max-time 300 \
+               -A chandlery/bedrock -o bds.zip "$url"
           sha="$(sha256sum bds.zip | cut -d' ' -f1)"
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "sha256: $sha"
