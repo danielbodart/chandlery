@@ -1,0 +1,158 @@
+# Rebuild Hytale when Hypixel ships a new version.
+#
+# Unlike Bedrock and Valheim, detecting a Hytale release is authenticated: the
+# version manifest is behind OAuth (PLAN 7.1). So this mints a downloader access
+# token from the stored refresh token — which rotates on every use, each refresh
+# killing the previous one. The rotated token is written straight back to the
+# secret, before anything else can fail and lose it. A GitHub App provides the
+# Secrets:write credential (its private key never expires, so nothing here has to
+# be rotated by hand); GITHUB_TOKEN cannot write secrets.
+name: hytale
+
+on:
+  schedule:
+    - cron: '29 * * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Build this exact version instead of detecting'
+        required: false
+      force:
+        description: 'Rebuild even if the tag already exists'
+        type: boolean
+        default: false
+  push:
+    branches: [master]
+    paths:
+      - 'base/**'
+      - 'hytale/**'
+      - '.github/workflows/hytale.yml'
+
+# Never two at once: the refresh-token rotation is a read-modify-write on one
+# secret, and a second run would race it and lose a token.
+concurrency:
+  group: hytale
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository }}/hytale
+  HYTALE_PATCHLINE: release
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      sha256: ${{ steps.resolve.outputs.sha256 }}
+      needed: ${{ steps.built.outputs.needed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ secrets.HYTALE_APP_ID }}
+          private-key: ${{ secrets.HYTALE_APP_PRIVATE_KEY }}
+
+      # Mint the access token, rotate the refresh token back into the secret, and
+      # resolve the version — all in one step, so the access token never becomes a
+      # step output (a bearer credential does not belong in outputs).
+      - id: resolve
+        name: Rotate the token and resolve the version
+        env:
+          HYTALE_DOWNLOADER_REFRESH_TOKEN: ${{ secrets.HYTALE_DOWNLOADER_REFRESH_TOKEN }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          export HYTALE_REFRESH_WRITEBACK="$RUNNER_TEMP/newrt"
+          access="$(tools/hytale-token)"
+          # Write the rotated refresh token back FIRST — before any step that
+          # could fail — or an interrupted run locks the pipeline out.
+          if [ -s "$HYTALE_REFRESH_WRITEBACK" ]; then
+            gh secret set HYTALE_DOWNLOADER_REFRESH_TOKEN --repo "$REPO" < "$HYTALE_REFRESH_WRITEBACK"
+            echo "rotated refresh token written back to the secret"
+          else
+            echo "no rotation this run"
+          fi
+          export HYTALE_ACCESS_TOKEN="$access"
+          version="$VERSION_INPUT"
+          [ -n "$version" ] || version="$(./hytale/upstream-version)"
+          sha="$(./hytale/upstream-version --sha256)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "Hytale $HYTALE_PATCHLINE is on $version (sha256 $sha)"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: built
+        name: Skip versions already published
+        env:
+          FORCE: ${{ inputs.force }}
+          EVENT: ${{ github.event_name }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          if [ "$FORCE" = "true" ] || [ "$EVENT" = "push" ]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "Building regardless: forced, or the image definition changed."
+          elif docker buildx imagetools inspect "${IMAGE}:${VERSION}" >/dev/null 2>&1; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "${IMAGE}:${VERSION} already exists; nothing to do."
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "New version. Building."
+          fi
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.needed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Plain daemon build — see bedrock.yml. The image is thin (it fetches the
+      # ~1.5 GB build at runtime with the operator's own token, not at build), so
+      # there is nothing to cache and `FROM chandlery/base:ci` resolves locally.
+      - name: Build and push Hytale
+        env:
+          DOCKER_BUILDKIT: "1"
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SHA256: ${{ needs.resolve.outputs.sha256 }}
+        run: |
+          docker build -t chandlery/base:ci base
+          docker build \
+            --build-arg BASE=chandlery/base:ci \
+            --build-arg HYTALE_VERSION="$VERSION" \
+            --build-arg HYTALE_PATCHLINE="$HYTALE_PATCHLINE" \
+            --build-arg HYTALE_SHA256="$SHA256" \
+            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" hytale
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:latest"
+
+      - name: Say what shipped
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SHA256: ${{ needs.resolve.outputs.sha256 }}
+        run: |
+          {
+            echo "### Hytale ${VERSION}"
+            echo ""
+            echo "- \`${IMAGE}:${VERSION}\`"
+            echo "- build sha256 \`${SHA256}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
