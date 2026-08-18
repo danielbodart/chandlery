@@ -107,18 +107,23 @@ fi
 
 inspect() { docker run --rm --entrypoint /bin/sh "$IMAGE" -c "$1"; }
 
-it "bakes the server in, so the image needs no download to run"
-assert_equals "yes" "$(inspect '[ -x /opt/valheim/valheim_server.x86_64 ] && echo yes')" && pass
+it "carries no game content — it pins the build, not the bytes"
+# The whole point of the conversion: a public image may not redistribute Valheim.
+assert_equals "" "$(inspect 'find / -name valheim_server.x86_64 -not -path "*/cache/*" 2>/dev/null')" && pass
 
-it "labels the image with the build id in its tag"
+it "records the build id in its tag's label, and the manifest gid it pins"
 assert_equals "${VALHEIM_BUILD_ID:?set VALHEIM_BUILD_ID}" \
-    "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE")" && pass
+    "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE")" \
+  && assert_equals "${VALHEIM_MANIFEST_GID:?set VALHEIM_MANIFEST_GID}" \
+    "$(inspect 'echo "$VALHEIM_MANIFEST_GID"')" && pass
+
+it "ships SteamCMD and the fetch machinery, not a baked payload"
+assert_equals "yes" "$(inspect '[ -x /opt/steamcmd/steamcmd.sh ] &&
+                                 [ -x /usr/local/lib/chandlery/fetch ] &&
+                                 [ -x /usr/local/bin/chandlery-cache ] && echo yes')" && pass
 
 it "ships the A2S probe its health check calls"
 assert_equals "yes" "$(inspect '[ -x /usr/local/bin/chandlery-a2s ] && echo yes')" && pass
-
-it "leaves no SteamCMD download scratch in the image"
-assert_equals "" "$(inspect 'ls -d /opt/valheim/steamapps/downloading /opt/valheim/steamapps/temp 2>/dev/null')" && pass
 
 it "runs the server as the non-root chandlery user"
 assert_equals "chandlery" "$(docker inspect -f '{{.Config.User}}' "$IMAGE")" && pass

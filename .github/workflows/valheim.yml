@@ -40,6 +40,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       build_id: ${{ steps.upstream.outputs.build_id }}
+      manifest_gid: ${{ steps.upstream.outputs.manifest_gid }}
       needed: ${{ steps.built.outputs.needed }}
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +52,13 @@ jobs:
           [ -n "$build_id" ] || build_id="$(./valheim/upstream-version)"
           echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
           echo "Upstream Valheim build: $build_id"
+
+          # The gid is the content address the image actually pins, and it is
+          # only ever the *current* one here — so record it now, on every build,
+          # or an old image can never be recreated (PLAN 7.3).
+          manifest_gid="$(./valheim/upstream-version --gid)"
+          echo "manifest_gid=$manifest_gid" >> "$GITHUB_OUTPUT"
+          echo "Manifest gid: $manifest_gid"
 
       - uses: docker/login-action@v3
         with:
@@ -110,6 +118,7 @@ jobs:
           build-args: |
             BASE=chandlery/base:ci
             VALHEIM_BUILD_ID=${{ needs.resolve.outputs.build_id }}
+            VALHEIM_MANIFEST_GID=${{ needs.resolve.outputs.manifest_gid }}
           tags: |
             ${{ env.IMAGE }}:${{ needs.resolve.outputs.build_id }}
             ${{ env.IMAGE }}:latest
@@ -117,7 +126,14 @@ jobs:
           cache-to: type=gha,scope=valheim,mode=max
 
       - name: Say what shipped
+        env:
+          BUILD_ID: ${{ needs.resolve.outputs.build_id }}
+          MANIFEST_GID: ${{ needs.resolve.outputs.manifest_gid }}
         run: |
-          echo "### Valheim build ${{ needs.resolve.outputs.build_id }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- \`${IMAGE}:${{ needs.resolve.outputs.build_id }}\`" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Valheim build ${BUILD_ID}"
+            echo ""
+            echo "- \`${IMAGE}:${BUILD_ID}\`"
+            # The gid is what makes this build re-creatable; keep it in the record.
+            echo "- depot 896661 manifest gid \`${MANIFEST_GID}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

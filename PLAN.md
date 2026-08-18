@@ -2,7 +2,7 @@
 
 > A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game — baked into an image, versioned, ready to sail.
 
-Status: **building**. Milestones 1-4 are done and tested (skeleton, Bedrock, its CI, Valheim); milestone 5 is blocked on a decision (§7.1) and milestone 6 is the homelab migration. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
+Status: **building**. Milestones 1-4 are done and tested (skeleton, Bedrock, its CI, Valheim), and milestone 6 — converting Bedrock and Valheim from baking to **pin-and-verify** (§7.3) — is done: both now carry no game content, record which version, and fetch it onto a `/cache` volume on first start through a shared `chandlery-cache` helper in the base. Bedrock is proven end to end against a real Mojang download (fetch → sha256 verify → boot healthy → graceful stop → cache reuse → wrong-sha fails closed); Valheim's SteamCMD depot fetch is written and adapter-tested but wants a first real run on a machine with an unthrottled connection (§7.4). Milestone 5 (Hytale) is buildable behind one device-login credential; milestone 7 is the homelab migration. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
 
 ---
 
@@ -86,11 +86,29 @@ indirection would have earned nothing.
 - **A console FIFO** wired to the server's stdin and held open for the container's lifetime, so a stop hook — or `docker exec … chandlery-console say hi` — can type at a running server without it seeing EOF.
 - **Health check only when we can beat the default.** An image gets a `HEALTHCHECK` *only* if the game gives us a probe that says more than "the port is open" — a protocol-level query that proves the server is actually answering players. Tidewaiter (and any other deployer) already does port-bound checks itself, so a port-bound `HEALTHCHECK` in the image adds a second copy of a check it already has, and a worse one: ours can't see the container's port mapping. When there's no better probe, ship no `HEALTHCHECK` and let the deployer's default do the job.
 
-### Per-game source adapter (build time)
-Each game's Dockerfile does one job at build: **install the exact version and bake it in**.
-- **Bedrock** — download Mojang's Bedrock dedicated-server zip for a given version, unzip into the image. **Measured, 1.26.44.3:** the ≈311 MB debug-symbols file this plan expected is no longer shipped; what remains to drop is `libMinecraft.Server.Lib.a` (8 MB, for linking against the server, not running it). The zip is 104 MB, 348 MB unpacked, and the finished image is **624 MB** against LinuxGSM's 1.17 GB. The 230 MB `bedrock_server` binary sits in its own layer above the packs, so a version bump re-pulls the binary and reuses the assets.
-- **Valheim** — `steamcmd +login anonymous +app_update 896660 validate +quit` at build; bake the result. `validate` makes SteamCMD checksum every file it wrote, which is the nearest thing to a verified artefact Steam offers. The build then re-reads the build id out of `appmanifest_896660.acf` and fails if Steam served a different build from the one asked for. Unlike Bedrock, Valheim takes `-savedir`, so the world simply lives on `/data` with no symlinks.
-- **Hytale** — bake the downloaded server; auth is the open question (its download needs OAuth — see §7).
+### Per-game source adapter (pin at build, fetch on first start)
+Each game's Dockerfile records **which** version, precisely enough it cannot run
+anything else; the base's `chandlery-cache` helper fetches those bytes onto the
+`/cache` volume on first start, verified, and reuses them thereafter. This is
+the pin-not-carry design §7.3 forces; the helper is shared so all three games
+(and Hytale's 3.3 GB assets especially) fetch through one atomic, fail-closed,
+marker-last engine.
+- **Bedrock** — the image pins the versioned Mojang URL and its **sha256**, both
+  as image env. The `fetch` hook downloads the zip, checks it against that
+  sha256 (a mismatch refuses to start, never runs), unzips, and drops the static
+  link library and the old debug-symbols file. The finished image is **161 MB**
+  (was 624 MB baked); the ≈104 MB zip lands on `/cache`, not in a layer. BDS has
+  no config-path flag, so its four stateful paths are seeded onto `/data` from
+  the fetched tree, then symlinked out to it.
+- **Valheim** — the image pins the depot (896661) and the immutable **manifest
+  gid**, as image env. `fetch` runs `steamcmd +login anonymous +download_depot
+  896660 896661 <gid> +quit`; pinning the manifest (not the moving `public`
+  branch) is what makes the build *reproducible*. SteamCMD itself is baked (it is
+  Valve's freely-redistributable tool, not the game). Valheim takes `-savedir`,
+  so the world lives on `/data` with no symlinks.
+- **Hytale** — pins version + patchline; the operator's own OAuth token fetches
+  their own entitled copy at start (§7.1, §7.3). No content in the image, so no
+  redistribution question for it at all.
 
 ---
 

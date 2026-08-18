@@ -8,10 +8,28 @@
 # SteamCMD. Pass --canonical to ask Steam itself, which is slower but is the
 # source of truth; CI uses the fast path and the build validates against Steam
 # anyway by downloading from it.
+#
+# Pass --gid to print the immutable manifest gid of the Linux server depot for
+# that branch instead of the build id. The gid is the content address the image
+# pins (PLAN 7.3): the build id names a release, the gid names its bytes, and CI
+# must record both since api.steamcmd.net only ever reports the *current* gid.
 set -eu
 
 APP_ID="${VALHEIM_APP_ID:-896660}"
+DEPOT_ID="${VALHEIM_DEPOT_ID:-896661}"
 BRANCH="${VALHEIM_BRANCH:-public}"
+
+if [ "${1:-}" = "--gid" ]; then
+    gid=$(curl -fsS --max-time 30 "https://api.steamcmd.net/v1/info/${APP_ID}" \
+          | jq -r --arg d "$DEPOT_ID" --arg b "$BRANCH" \
+                '.data[].depots[$d].manifests[$b].gid')
+    case "$gid" in
+        ''|null) echo "no $BRANCH manifest gid for depot $DEPOT_ID of app $APP_ID" >&2; exit 1 ;;
+        *[!0-9]*) echo "unrecognised manifest gid [$gid]" >&2; exit 1 ;;
+    esac
+    printf '%s\n' "$gid"
+    exit 0
+fi
 
 if [ "${1:-}" = "--canonical" ]; then
     command -v steamcmd >/dev/null 2>&1 || { echo "steamcmd not installed" >&2; exit 69; }

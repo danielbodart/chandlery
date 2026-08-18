@@ -10,10 +10,20 @@ set -eu
 : "${VALHEIM_WORLD:=Dedicated}"
 : "${VALHEIM_PORT:=2456}"
 : "${VALHEIM_PUBLIC:=1}"
+: "${VALHEIM_MANIFEST_GID:?VALHEIM_MANIFEST_GID is not set}"
+
+# The server was fetched to /cache by the prepare hook, keyed by manifest gid.
+game="${CHANDLERY_CACHE:-/cache}/valheim/$VALHEIM_MANIFEST_GID"
+[ -x "$game/valheim_server.x86_64" ] || {
+    echo "[valheim] build $VALHEIM_MANIFEST_GID is not on /cache (no $game/valheim_server.x86_64);" >&2
+    echo "[valheim] the prepare hook should have fetched it — did it run?" >&2
+    exit 70
+}
+cd "$game"
 
 # Steam's client library looks up the *game's* app id, not the server's.
 export SteamAppId=892970
-export LD_LIBRARY_PATH="/opt/valheim/linux64:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$game/linux64:${LD_LIBRARY_PATH:-}"
 
 set -- ./valheim_server.x86_64 \
     -nographics -batchmode \

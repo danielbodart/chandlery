@@ -75,17 +75,24 @@ cleanup
 # A root-owned bind mount is the normal homelab case; the entrypoint should
 # take it over rather than leaving the server unable to write its world.
 world=$(mktemp -d)
-chown 0:0 "$world"
-docker run -d --name "$CONTAINER" --user 0 -v "$world:/data" "$HOOKED" >/dev/null
-if wait_for_log "$CONTAINER" "fake-server: listening"; then
-    owner=$(docker exec "$CONTAINER" stat -c '%U' /data)
-    logs=$(docker logs "$CONTAINER" 2>&1)
-    assert_contains "$logs" "dropping to chandlery" \
-        && assert_contains "$logs" "fake-server: running as chandlery" \
-        && assert_equals "chandlery" "$owner" "/data owner" \
-        && pass
+# Building the root-owned fixture needs root on the host. Skip cleanly when the
+# suite runs as an ordinary user rather than aborting the whole run.
+if ! chown 0:0 "$world" 2>/dev/null; then
+    printf 'skipped (needs root on the host to make a root-owned bind mount)\n'
+    TESTS_RUN=$((TESTS_RUN - 1))
+    rm -rf "$world"
+else
+    docker run -d --name "$CONTAINER" --user 0 -v "$world:/data" "$HOOKED" >/dev/null
+    if wait_for_log "$CONTAINER" "fake-server: listening"; then
+        owner=$(docker exec "$CONTAINER" stat -c '%U' /data)
+        logs=$(docker logs "$CONTAINER" 2>&1)
+        assert_contains "$logs" "dropping to chandlery" \
+            && assert_contains "$logs" "fake-server: running as chandlery" \
+            && assert_equals "chandlery" "$owner" "/data owner" \
+            && pass
+    fi
+    rm -rf "$world"
 fi
-rm -rf "$world"
 
 it "runs the prepare hook before the server starts"
 cleanup
@@ -114,14 +121,20 @@ assert_contains "$logs" "prepare: refusing" \
 it "says what to do when /data is not writable"
 cleanup
 world=$(mktemp -d)
-chown 0:0 "$world"
-# Runs as the non-root user against a root-owned bind mount: the common
-# first-run mistake, and previously a silent one.
-out=$(docker run --rm -v "$world:/data" "$HOOKED" 2>&1 || true)
-assert_contains "$out" "/data is not writable" \
-    && assert_contains "$out" "chown -R 1000:1000" \
-    && refute_contains "$out" "fake-server: listening" \
-    && pass
-rm -rf "$world"
+# Same fixture, same reason to skip: a root-owned bind mount needs host root.
+if ! chown 0:0 "$world" 2>/dev/null; then
+    printf 'skipped (needs root on the host to make a root-owned bind mount)\n'
+    TESTS_RUN=$((TESTS_RUN - 1))
+    rm -rf "$world"
+else
+    # Runs as the non-root user against a root-owned bind mount: the common
+    # first-run mistake, and previously a silent one.
+    out=$(docker run --rm -v "$world:/data" "$HOOKED" 2>&1 || true)
+    assert_contains "$out" "/data is not writable" \
+        && assert_contains "$out" "chown -R 1000:1000" \
+        && refute_contains "$out" "fake-server: listening" \
+        && pass
+    rm -rf "$world"
+fi
 
 summary "base skeleton"

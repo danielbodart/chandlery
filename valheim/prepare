@@ -27,4 +27,10 @@ case "$world" in
         ;;
 esac
 
+# First start fetches the pinned build into /cache; later starts reuse it. The
+# cache is keyed by the manifest gid, so a build id that re-points at new bytes
+# is a different key and refetches, while the same bytes are never pulled twice.
+: "${VALHEIM_MANIFEST_GID:?VALHEIM_MANIFEST_GID is not set; this image is misbuilt}"
+chandlery-cache valheim "$VALHEIM_MANIFEST_GID" /usr/local/lib/chandlery/fetch >/dev/null
+
 mkdir -p /data/worlds_local

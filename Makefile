@@ -11,8 +11,11 @@ BUILD_SECRETS = $(if $(EXTRA_CA),--secret id=extra-ca$(comma)src=$(EXTRA_CA),)
 comma := ,
 
 # Default to whatever upstream ships right now. Pass BEDROCK_VERSION to pin.
-BEDROCK_VERSION  ?= $(shell ./bedrock/upstream-version)
-VALHEIM_BUILD_ID ?= $(shell ./valheim/upstream-version)
+BEDROCK_VERSION      ?= $(shell ./bedrock/upstream-version)
+VALHEIM_BUILD_ID     ?= $(shell ./valheim/upstream-version)
+# The manifest gid is the content address the Valheim image actually pins; the
+# build id is only the human-facing tag over it (PLAN 7.3).
+VALHEIM_MANIFEST_GID ?= $(shell ./valheim/upstream-version --gid)
 
 .PHONY: help base bedrock valheim fake-valheim test test-base test-bedrock test-valheim test-valheim-adapter clean
 
@@ -40,6 +43,7 @@ test-bedrock: bedrock
 valheim: base
 	docker build $(BUILD_SECRETS) --build-arg BASE=$(REGISTRY)/base:$(TAG) \
 	  --build-arg VALHEIM_BUILD_ID=$(VALHEIM_BUILD_ID) \
+	  --build-arg VALHEIM_MANIFEST_GID=$(VALHEIM_MANIFEST_GID) \
 	  -t $(REGISTRY)/valheim:$(VALHEIM_BUILD_ID) -t $(REGISTRY)/valheim:$(TAG) valheim
 
 # The adapter — prepare checks, argument assembly, stop signal, health probe —
@@ -50,10 +54,12 @@ fake-valheim: base
 	  -t $(REGISTRY)/test-fake-valheim:$(TAG) .
 
 test-valheim-adapter: fake-valheim
-	VALHEIM_BUILD_ID=$(VALHEIM_BUILD_ID) ./test/valheim_test.sh
+	VALHEIM_BUILD_ID=$(VALHEIM_BUILD_ID) VALHEIM_MANIFEST_GID=$(VALHEIM_MANIFEST_GID) \
+	  ./test/valheim_test.sh
 
 test-valheim: valheim fake-valheim
-	VALHEIM_BUILD_ID=$(VALHEIM_BUILD_ID) ./test/valheim_test.sh
+	VALHEIM_BUILD_ID=$(VALHEIM_BUILD_ID) VALHEIM_MANIFEST_GID=$(VALHEIM_MANIFEST_GID) \
+	  ./test/valheim_test.sh
 
 test-base: base
 	docker build --build-arg BASE=$(REGISTRY)/base:$(TAG) \

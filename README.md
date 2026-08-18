@@ -7,7 +7,7 @@
 
 > A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game.
 
-Status: **early**. Minecraft Bedrock and Valheim are built and tested, but both currently *bake* the game in and are being converted to pin-and-verify before publication — see [PLAN.md §7.3](./PLAN.md). Nothing is published to a registry yet.
+Status: **early**. Minecraft Bedrock and Valheim are built, tested, and now *pin-and-verify* rather than baking the game in: the image records which version and fetches it from upstream on first start, verified, onto a `/cache` volume (see [PLAN.md §7.3](./PLAN.md)). Bedrock is proven end to end against a real download; Valheim's SteamCMD fetch wants a first real run on the homelab. Nothing is published to a registry yet.
 
 ## Running one
 

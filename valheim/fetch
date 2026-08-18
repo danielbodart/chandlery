@@ -1,0 +1,45 @@
+#!/bin/sh
+# Populate the staging directory chandlery-cache hands us ($1) with Valheim.
+#
+# SteamCMD downloads exactly the depot manifest the image pins. `download_depot`
+# is addressed by an immutable manifest gid, so — unlike `app_update`, which
+# follows a moving branch — the same pin fetches the same bytes every time, and
+# the build is reproducible (PLAN 7.3). A mismatch cannot happen silently: Steam
+# either serves that manifest or fails.
+set -eu
+
+staging=$1
+: "${VALHEIM_APP_ID:?VALHEIM_APP_ID is not set}"
+: "${VALHEIM_DEPOT_ID:?VALHEIM_DEPOT_ID is not set}"
+: "${VALHEIM_MANIFEST_GID:?VALHEIM_MANIFEST_GID is not set}"
+
+log() { printf '[valheim] %s\n' "$*" >&2; }
+
+# Keep everything SteamCMD writes — its self-update, its config, the download —
+# inside staging, so a fetch chandlery-cache aborts leaves nothing on /cache.
+export HOME="$staging/.steam-home"
+mkdir -p "$HOME"
+
+log "downloading depot $VALHEIM_DEPOT_ID manifest $VALHEIM_MANIFEST_GID via SteamCMD"
+/opt/steamcmd/steamcmd.sh \
+    +force_install_dir "$staging/.install" \
+    +login anonymous \
+    +download_depot "$VALHEIM_APP_ID" "$VALHEIM_DEPOT_ID" "$VALHEIM_MANIFEST_GID" \
+    +quit
+
+# download_depot ignores force_install_dir and drops the content under Steam's
+# own tree (…/steamapps/content/app_<app>/depot_<depot>/). Rather than depend on
+# that exact path across SteamCMD versions, find the server and take its dir.
+found=$(find "$staging" -type f -name valheim_server.x86_64 2>/dev/null | head -1)
+[ -n "$found" ] || { log "SteamCMD produced no valheim_server.x86_64"; exit 65; }
+
+src=$(dirname "$found")
+if [ "$src" != "$staging" ]; then
+    # Move the whole depot tree (server binary, linux64/steamclient.so, data)
+    # up into the staging root, then drop SteamCMD's scratch.
+    (cd "$src" && tar cf - .) | (cd "$staging" && tar xf -)
+    rm -rf "$staging/.steam-home" "$staging/.install"
+fi
+
+chmod +x "$staging/valheim_server.x86_64"
+test -x "$staging/valheim_server.x86_64" || { log "no runnable server after relocate"; exit 65; }
