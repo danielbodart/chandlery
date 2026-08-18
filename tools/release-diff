@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Diff two game-server release archives and cost the result in layer terms.
+
+    tools/release-diff bedrock-server-1.26.43.1.zip bedrock-server-1.26.44.3.zip
+
+Answers one question: when a new release lands, how much of it is genuinely
+new? That decides whether splitting the payload into finer layers is worth
+anything, or whether the volatile parts change wholesale every time and the
+current split is already as good as it gets.
+
+Reports compressed bytes, because that is what a pull actually moves. The
+zip's own deflate is a fair proxy for the gzip a registry applies to a layer.
+"""
+import collections
+import hashlib
+import sys
+import zipfile
+
+
+def index(path):
+    """Map every file in the archive to (sha256, size, compressed size)."""
+    archive = zipfile.ZipFile(path)
+    entries = {}
+    for info in archive.infolist():
+        if info.is_dir():
+            continue
+        with archive.open(info) as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+        entries[info.filename] = (digest, info.file_size, info.compress_size)
+    return entries
+
+
+def subtree(name, depth=2):
+    """resource_packs/vanilla/x/y -> resource_packs/vanilla; top-level files stay whole.
+
+    Two levels is the granularity a per-pack layer split would have, so these
+    are the groups worth reporting.
+    """
+    parts = name.split('/')
+    return parts[0] if len(parts) == 1 else '/'.join(parts[:depth])
+
+
+def mb(value):
+    return value / 1e6
+
+
+def main(argv):
+    if len(argv) != 3:
+        print(__doc__, file=sys.stderr)
+        return 64
+
+    old_path, new_path = argv[1], argv[2]
+    old, new = index(old_path), index(new_path)
+
+    changed = [k for k in new if k in old and new[k][0] != old[k][0]]
+    added = [k for k in new if k not in old]
+    unchanged = [k for k in new if k in old and new[k][0] == old[k][0]]
+    removed = [k for k in old if k not in new]
+    fresh = set(changed) | set(added)
+
+    print(f"{old_path}  ->  {new_path}")
+    print(f"  {len(new)} files now, {len(old)} before")
+    print(f"  unchanged {len(unchanged)}   changed {len(changed)}   "
+          f"added {len(added)}   removed {len(removed)}")
+
+    total = sum(v[2] for v in new.values())
+    # The single biggest file is usually the server binary, and usually the one
+    # that changes every release. Name it rather than assuming which it is.
+    biggest = max(new, key=lambda k: new[k][2])
+    biggest_bytes = new[biggest][2]
+    assets = total - biggest_bytes
+    assets_fresh = sum(new[k][2] for k in fresh if k != biggest)
+
+    print("\n  compressed bytes")
+    print(f"    whole payload             {mb(total):7.1f} MB")
+    print(f"    {biggest:<24} {mb(biggest_bytes):7.1f} MB   "
+          f"{'CHANGED' if biggest in fresh else 'unchanged'}")
+    print(f"    everything else           {mb(assets):7.1f} MB")
+    print(f"    of which new or changed   {mb(assets_fresh):7.1f} MB"
+          f"   <- the most a finer layer split could save")
+    if assets:
+        print(f"    => {assets_fresh / assets:.1%} of the non-binary bytes moved")
+
+    print("\n  by sub-tree (what a per-sub-tree layer split would re-pull)")
+    groups = collections.defaultdict(lambda: [0, 0, 0, 0])
+    for name, value in new.items():
+        row = groups[subtree(name)]
+        row[0] += 1
+        row[2] += value[2]
+        if name in fresh:
+            row[1] += 1
+            row[3] += value[2]
+
+    for name in sorted(groups, key=lambda g: -groups[g][2]):
+        files, fresh_files, size, fresh_size = groups[name]
+        if size < 200_000 and not fresh_files:
+            continue
+        state = "CHANGED" if fresh_files else "clean"
+        print(f"    {name:<42} {mb(size):6.1f} MB  "
+              f"{fresh_files:>5}/{files:<5} files  {mb(fresh_size):6.1f} MB  {state}")
+
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

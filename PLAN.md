@@ -160,7 +160,7 @@ homelab migration in §8.6.
 
 ## 7. Open questions (resolve in build)
 - **Hytale auth in CI** — investigated; see §7.1. It now needs a decision, not more investigation.
-- **Layering to keep updates small.** Split each Dockerfile so rarely-changing assets sit in a lower layer and the volatile binary in the top layer, so a version bump re-pulls only the small layer (helps MC a lot; Steam's `app_update` rewrites broadly, so gains are limited — measure).
+- **Layering to keep updates small** — partly measured; see §7.2. What remains is one number, and the tool to get it is written.
 - **Steam auth** — public dedicated servers install via `login anonymous`; confirm none of ours need a real account.
 - **Base image choice** — alpine vs debian-slim per game (Bedrock's binary wants glibc → debian-slim; Steam games likewise). The base may need to be glibc, not musl.
 - **Version marker** for CI "did it change" — newest pushed tag vs a state file.
@@ -218,6 +218,60 @@ an account): the server is `HytaleServer.jar` + `Assets.zip` on **Java 25**,
 wants ~4 GB RAM, and listens on **UDP 5520 (QUIC)** — not the plan's assumed
 `conntrack`-friendly shape, and worth re-checking against Tidewaiter's
 detectors. The server runs on arm64, but the downloader ships amd64 only.
+
+---
+
+### 7.2 Layering: measured, and one number short
+
+Registry blobs are gzipped, so the sizes `docker images` reports are not what a
+pull costs. Bedrock 1.26.44.3, read off a real registry manifest:
+
+| layer | compressed |
+| --- | --- |
+| debian base | 28.2 MB |
+| apt (tini, ca-certificates) | 3.9 MB |
+| mc-monitor | 6.3 MB |
+| game assets | 22.0 MB |
+| `bedrock_server` | 76.5 MB |
+| **first pull** | **137.0 MB** |
+
+A version bump therefore costs at most 98.5 MB, of which the binary is 78%.
+That caps what any cleverness can win at ~22 MB.
+
+**Copying over the top of the previous image does not work the obvious way.**
+The layer is a genuine content diff — containerd compares against the parent
+snapshot, so rewriting a file with identical content adds nothing. But the
+comparison includes mtime, and `unzip` stamps every file it extracts. Measured
+on a 40 MB tree where exactly one 2 MB file differed:
+
+| | resulting layer |
+| --- | --- |
+| `cp -a` (preserves mtimes) | 2.02 MB |
+| `cp -r` (fresh mtimes — what `unzip` does) | **40.1 MB** |
+| `rsync --checksum` | 2.02 MB |
+
+Mojang rebuilds the whole zip each release and stamps every entry with the
+build time, so the naive "download over the top" would land the full payload in
+the layer. It needs an explicit `rsync -a --checksum --delete` from a staging
+extract.
+
+**But a finer layer split beats chaining anyway.** Splitting the asset tree
+into several `COPY` layers along stable boundaries — per pack, say — gives the
+same file-level granularity, because an untouched sub-tree keeps its digest and
+is not re-pulled. It needs no chain from the previous image, so there is no
+growing layer stack against overlay2's 127-layer cap, no periodic squash or
+snapshot, no dependency on the previous image still existing, and every build
+stays independently reproducible. Chaining buys nothing this does not, and
+costs all of that.
+
+**The missing number** is how much of the 22 MB asset tree actually churns
+between releases. If the packs change wholesale every time, the current
+two-layer split is already optimal and there is nothing to do.
+`tools/release-diff` answers it from two release zips — it was written for this
+and is unrun, because Mojang's CDN rate-limited the sandbox too hard to fetch a
+second release. Run it on any machine with an unthrottled connection, or have
+CI publish each release's per-sub-tree digest map as an artifact and let the
+history accumulate for free.
 
 ---
 
