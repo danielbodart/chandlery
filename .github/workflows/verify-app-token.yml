@@ -1,0 +1,32 @@
+# Throwaway: prove the GitHub App can mint a token and write a repo secret,
+# before the real hytale.yml trusts it with the rotating downloader token.
+# Writes and immediately deletes a self-test secret. Delete this workflow once
+# it has gone green.
+name: verify-app-token
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v2
+        id: app
+        with:
+          app-id: ${{ secrets.HYTALE_APP_ID }}
+          private-key: ${{ secrets.HYTALE_APP_PRIVATE_KEY }}
+
+      - name: Write and delete a throwaway secret
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          printf 'selftest-%s' "$RANDOM" | gh secret set APP_TOKEN_SELFTEST --repo "$REPO"
+          echo "wrote APP_TOKEN_SELFTEST"
+          gh secret delete APP_TOKEN_SELFTEST --repo "$REPO"
+          echo "deleted APP_TOKEN_SELFTEST — the App has Secrets:write. All good."
