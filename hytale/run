@@ -1,0 +1,43 @@
+#!/bin/sh
+# Become the Hytale server, from the version fetched to /cache by the prepare
+# hook. exec matters: the entrypoint wired the console FIFO to this process's
+# stdin, and the stop hook signals this pid.
+set -eu
+
+: "${HYTALE_VERSION:?HYTALE_VERSION is not set}"
+game="${CHANDLERY_CACHE:-/cache}/hytale/$HYTALE_VERSION"
+
+jar=$(find "$game" -maxdepth 2 -name '*.jar' | head -1)
+[ -n "$jar" ] || {
+    echo "[hytale] no server jar in $game; did the prepare hook fetch it?" >&2
+    exit 70
+}
+
+# The server writes universe/, logs/, config.json … relative to the working
+# directory; keep that on /data. --assets points back at the read-only payload.
+cd /data
+assets="$game/assets"
+[ -d "$assets" ] || assets="$game"
+
+set -- java
+# A pre-trained AOT cache cuts boot time, when the download shipped one.
+aot=$(find "$game" -maxdepth 2 -name 'HytaleServer.aot' | head -1)
+[ -n "$aot" ] && set -- "$@" "-XX:AOTCache=$aot"
+set -- "$@" -jar "$jar" --assets "$assets" --disable-sentry
+
+# The server reads its session tokens from the environment itself, so online
+# mode passes nothing on the command line (argv is world-readable). Offline mode
+# needs no credentials at all and is for LAN and our own tests.
+if [ "${HYTALE_AUTH_MODE:-online}" = "offline" ]; then
+    set -- "$@" --auth-mode offline
+fi
+
+[ -n "${HYTALE_BIND:-}" ] && set -- "$@" --bind "$HYTALE_BIND"
+
+if [ -n "${HYTALE_EXTRA_ARGS:-}" ]; then
+    # Deliberately unquoted, so the caller can pass several flags.
+    # shellcheck disable=SC2086
+    set -- "$@" $HYTALE_EXTRA_ARGS
+fi
+
+exec "$@"

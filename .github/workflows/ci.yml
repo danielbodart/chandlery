@@ -32,5 +32,11 @@ jobs:
       - name: Valheim adapter
         run: make test-valheim-adapter
 
+      # Likewise Hytale: the adapter on a fake server, no downloader token and no
+      # 3.3 GB asset download. The authenticated fetch is exercised on a real
+      # host (PLAN 7.1).
+      - name: Hytale adapter
+        run: make test-hytale-adapter
+
       - if: failure()
         run: docker ps -a

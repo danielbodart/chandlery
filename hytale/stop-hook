@@ -1,0 +1,12 @@
+#!/bin/sh
+# Ask the server to shut down cleanly, through the console the base wired to its
+# stdin. argv[1] is the server pid; we do not need it — the entrypoint waits.
+#
+# TBD, and flagged as such (PLAN 6, 7.1): the Server Manual documents no
+# shutdown command, but the server does have a console (it is where /auth and
+# /update run), and `stop` is the near-universal console command for a Java game
+# server. This is the best-informed guess; it must be confirmed on a live
+# server, along with whether the server terminates its own game session on exit
+# (DELETE sessions.hytale.com/game-session) or we must.
+set -eu
+chandlery-console stop

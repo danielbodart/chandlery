@@ -1,0 +1,35 @@
+#!/bin/sh
+# Runs as the game user before the server starts. Fetches the pinned version to
+# /cache on first start (which needs a downloader access token, then and only
+# then), and checks the runtime auth env unless we are in offline mode.
+set -eu
+
+log() { printf '[hytale] %s\n' "$*" >&2; }
+
+: "${HYTALE_VERSION:?HYTALE_VERSION is not set; this image is misbuilt}"
+
+mode="${HYTALE_AUTH_MODE:-online}"
+
+# Server-session auth is token passthrough (PLAN 7.1): the deployer injects two
+# tokens, exactly like Valheim's password. The server reads them from the
+# environment itself, so we only check they are present — we never put them on a
+# command line, where argv is world-readable. Offline mode needs neither.
+if [ "$mode" != "offline" ]; then
+    missing=
+    [ -n "${HYTALE_SERVER_SESSION_TOKEN:-}" ]  || missing="$missing HYTALE_SERVER_SESSION_TOKEN"
+    [ -n "${HYTALE_SERVER_IDENTITY_TOKEN:-}" ] || missing="$missing HYTALE_SERVER_IDENTITY_TOKEN"
+    if [ -n "$missing" ]; then
+        log "ERROR: missing server auth env:$missing"
+        log "ERROR: inject them from a provisioning device-login (PLAN 7.1),"
+        log "ERROR: or set HYTALE_AUTH_MODE=offline for a LAN or test server."
+        exit 78
+    fi
+fi
+
+# First start fetches; later starts reuse /cache. The fetch needs a downloader
+# access token, but only when this version is not already cached.
+chandlery-cache hytale "$HYTALE_VERSION" /usr/local/lib/chandlery/fetch >/dev/null
+
+# The server writes its state relative to the working directory (universe/,
+# logs/, config.json, …); run keeps that on /data, so make sure it exists.
+for d in universe logs mods .cache; do mkdir -p "/data/$d"; done
