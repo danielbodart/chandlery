@@ -29,15 +29,10 @@ set -euo pipefail
 
 CLIENT_ID="${HYTALE_CLIENT_ID:-hytale-downloader}"
 TOKEN_URL="${HYTALE_TOKEN_URL:-https://oauth.accounts.hytale.com/oauth2/token}"
-# Default store: a repo-local .hytale.token.json (git-ignored) if it exists,
-# else the per-user config path. Override with HYTALE_TOKEN_FILE.
-if [ -n "${HYTALE_TOKEN_FILE:-}" ]; then
-    TOKEN_FILE="$HYTALE_TOKEN_FILE"
-elif [ -f "$PWD/.hytale.token.json" ]; then
-    TOKEN_FILE="$PWD/.hytale.token.json"
-else
-    TOKEN_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/chandlery/hytale.json"
-fi
+# Default store lives out of the repo entirely, in the per-user config dir.
+# Seed it once with {"refresh_token":"<from the device login>"}. Override with
+# HYTALE_TOKEN_FILE; in CI set HYTALE_DOWNLOADER_REFRESH_TOKEN instead.
+TOKEN_FILE="${HYTALE_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/chandlery/hytale.json}"
 # Refresh when fewer than this many seconds of access-token life remain.
 SKEW="${HYTALE_TOKEN_SKEW:-120}"
 
@@ -54,7 +49,8 @@ if [ -n "${HYTALE_DOWNLOADER_REFRESH_TOKEN:-}" ]; then
     # A scratch file so the cache/writeback logic below is identical either way.
     TOKEN_FILE="${HYTALE_TOKEN_FILE:-$(mktemp)}"
     if [ ! -s "$TOKEN_FILE" ]; then
-        jq -n --arg rt "$HYTALE_DOWNLOADER_REFRESH_TOKEN" '{refresh_token:$rt}' > "$TOKEN_FILE"
+        ( umask 077; jq -n --arg rt "$HYTALE_DOWNLOADER_REFRESH_TOKEN" \
+            '{refresh_token:$rt}' > "$TOKEN_FILE" )
     fi
 elif [ ! -f "$TOKEN_FILE" ]; then
     log "no token store: set HYTALE_DOWNLOADER_REFRESH_TOKEN, or create $TOKEN_FILE"
@@ -105,10 +101,16 @@ chmod 600 "$tmp"
 mv -f "$tmp" "$TOKEN_FILE"
 
 # CI cannot write an env var back to its secret store; surface the rotated
-# refresh token so a workflow step can push it into the secret itself.
-if [ "$env_backed" = 1 ] && [ "$new_refresh" != "$refresh_token" ]; then
-    [ -n "${HYTALE_REFRESH_WRITEBACK:-}" ] && printf '%s\n' "$new_refresh" > "$HYTALE_REFRESH_WRITEBACK"
-    [ -n "${GITHUB_OUTPUT:-}" ] && printf 'refresh_token=%s\n' "$new_refresh" >> "$GITHUB_OUTPUT"
+# refresh token to a file a trusted step reads to update the secret via the API.
+# Deliberately NOT via $GITHUB_OUTPUT: step outputs persist and are a poor place
+# for a bearer credential. The file is created owner-only, atomically, so it is
+# never briefly world-readable — same pattern as the store above.
+if [ "$env_backed" = 1 ] && [ "$new_refresh" != "$refresh_token" ] \
+   && [ -n "${HYTALE_REFRESH_WRITEBACK:-}" ]; then
+    wtmp=$(mktemp "${HYTALE_REFRESH_WRITEBACK}.XXXXXX")
+    chmod 600 "$wtmp"
+    printf '%s\n' "$new_refresh" > "$wtmp"
+    mv -f "$wtmp" "$HYTALE_REFRESH_WRITEBACK"
 fi
 
 printf '%s\n' "$new_access"
