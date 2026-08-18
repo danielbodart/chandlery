@@ -98,7 +98,11 @@ RUN set -eux; \
          https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
       | tar -xz -C /opt/steamcmd; \
     /opt/steamcmd/steamcmd.sh +quit >/dev/null 2>&1 || true; \
-    sc=$(find /opt/steamcmd -name steamclient.so | head -1); \
+# The server is 64-bit, so it must be the linux64 library — a bare `find | head`
+# can pick linux32 first (filesystem order), and the 64-bit server then fails its
+# Steam init with "Steam is not initialized".
+    sc=$(find /opt/steamcmd -path '*/linux64/*' -name steamclient.so | head -1); \
+    [ -n "$sc" ] || sc=$(find /opt/steamcmd -name steamclient.so | head -1); \
     test -n "$sc" || { echo "SteamCMD produced no steamclient.so" >&2; exit 70; }; \
     cp "$sc" /stage/steamclient.so
 
