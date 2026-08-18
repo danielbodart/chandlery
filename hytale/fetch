@@ -1,10 +1,19 @@
 #!/bin/sh
 # Populate staging ($1) with the Hytale server for the pinned version.
 #
-# Every Hytale asset is gated behind OAuth and a signed, per-request URL
-# (PLAN 7.1), so the fetch needs a downloader *access* token. Mint one on the
-# host with tools/hytale-token and pass it as HYTALE_ACCESS_TOKEN; it is needed
-# only on the first start of a version, because /cache keeps the rest.
+# Every Hytale asset is gated behind OAuth and a signed, per-request URL, so the
+# fetch needs a downloader *access* token. Mint one on the host with
+# tools/hytale-token and pass it as HYTALE_ACCESS_TOKEN; it is needed only on the
+# first start of a version, because /cache keeps the rest.
+#
+# The flow is a Cloudflare-R2 signing proxy, verified against the official
+# downloader's live traffic:
+#   1. GET account-data.hytale.com/game-assets/version/<patchline>.json (Bearer)
+#        -> {"url": <signed R2 url>}
+#   2. GET <signed url>  ->  {"version","download_url","sha256"}
+#   3. GET account-data.hytale.com/game-assets/<download_url> (Bearer)
+#        -> {"url": <signed R2 url>}
+#   4. GET <signed url>  ->  the build zip; verify sha256.
 set -eu
 
 staging=$1
@@ -15,27 +24,28 @@ log() { printf '[hytale] %s\n' "$*" >&2; }
 token="${HYTALE_ACCESS_TOKEN:-}"
 if [ -z "$token" ]; then
     log "ERROR: HYTALE_ACCESS_TOKEN is not set, and $HYTALE_VERSION is not cached."
-    log 'ERROR: mint one on the host and inject it for the first start of a'
-    log 'ERROR: version:  -e HYTALE_ACCESS_TOKEN="$(tools/hytale-token)"'
+    log 'ERROR: mint one on the host and inject it for a version'"'"'s first start:'
+    log 'ERROR:   -e HYTALE_ACCESS_TOKEN="$(tools/hytale-token)"'
     exit 78
 fi
 
 api="${HYTALE_ACCOUNT_API:-https://account-data.hytale.com}"
 
-# Ask which build the patchline is on, and where its assets are. This endpoint
-# is authenticated — unauthenticated it 403s (PLAN 7.1). A plain token UA, for
-# the same Azure-CDN reason Bedrock needs one.
-#
-# NOTE: the exact field names of version/<patchline>.json are the one thing not
-# yet verified against a live authenticated response (the plan reached the 403,
-# not the body). They are isolated to these two jq lines so a single correction
-# finalises the fetch once a downloader token is in hand.
-log "resolving $HYTALE_PATCHLINE $HYTALE_VERSION"
-meta=$(curl -fsS -A chandlery/hytale -H "authorization: Bearer $token" \
-        "$api/version/$HYTALE_PATCHLINE.json")
+# Ask the signing proxy for a signed URL to an object under game-assets/.
+signed_url() {  # $1 = object path
+    curl -fsS -A chandlery/hytale -H "authorization: Bearer $token" \
+         "$api/game-assets/$1" | jq -r '.url // empty'
+}
 
-got_version=$(printf '%s' "$meta" | jq -r '.version // .buildVersion // empty')
-asset_url=$(printf '%s' "$meta" | jq -r '.url // .downloadUrl // .assetUrl // empty')
+# 1-2. resolve the version manifest for this patchline.
+log "resolving $HYTALE_PATCHLINE version"
+vsig=$(signed_url "version/${HYTALE_PATCHLINE}.json")
+[ -n "$vsig" ] || { log "no signed URL for the version manifest (token expired or unauthorised?)"; exit 65; }
+meta=$(curl -fsS "$vsig")
+
+got_version=$(printf '%s' "$meta" | jq -r '.version // empty')
+download_url=$(printf '%s' "$meta" | jq -r '.download_url // empty')
+manifest_sha=$(printf '%s' "$meta" | jq -r '.sha256 // empty')
 
 # Fail closed if the patchline has moved off the version this image pins: the
 # tag must never fetch something else. CI rebuilds the image on a new version.
@@ -43,15 +53,29 @@ if [ -n "$got_version" ] && [ "$got_version" != "$HYTALE_VERSION" ]; then
     log "ERROR: $HYTALE_PATCHLINE is on $got_version, but this image pins $HYTALE_VERSION."
     exit 65
 fi
-[ -n "$asset_url" ] || { log "no asset URL in the version metadata"; exit 65; }
+[ -n "$download_url" ] || { log "no download_url in the version manifest"; exit 65; }
 
-log "downloading assets (this is large — Assets.zip alone is ~3.3 GB)"
-arc="$staging/.hytale.zip"
-curl -fsSL -A chandlery/hytale --retry 5 --retry-all-errors --retry-max-time 1800 \
-     -o "$arc" "$asset_url"
-unzip -q "$arc" -d "$staging"
-rm -f "$arc"
+# 3-4. resolve and download the build.
+log "downloading build $HYTALE_VERSION ($download_url)"
+bsig=$(signed_url "$download_url")
+[ -n "$bsig" ] || { log "no signed URL for the build"; exit 65; }
 
-# A server jar is what proves the download produced something runnable.
+zip="$staging/.hytale.zip"
+curl -fsSL -A chandlery/hytale --retry 5 --retry-all-errors --retry-max-time 3600 -o "$zip" "$bsig"
+
+# Prefer the sha256 baked into the image (a cryptographic pin, like Bedrock);
+# fall back to the manifest's own sha256, which still verifies the download
+# against upstream's stated checksum. A mismatch refuses to run.
+want="${HYTALE_SHA256:-$manifest_sha}"
+if [ -n "$want" ] && [ "$want" != null ]; then
+    log "verifying sha256"
+    echo "$want  $zip" | sha256sum -c - >/dev/null
+else
+    log "WARNING: no sha256 to verify against"
+fi
+
+unzip -q "$zip" -d "$staging"
+rm -f "$zip"
+
 find "$staging" -maxdepth 2 -name '*.jar' | grep -q . \
     || { log "no server jar in the download"; exit 65; }

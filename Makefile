@@ -72,6 +72,7 @@ hytale: base
 	docker build $(BUILD_SECRETS) --build-arg BASE=$(REGISTRY)/base:$(TAG) \
 	  --build-arg HYTALE_VERSION=$(HYTALE_VERSION) \
 	  --build-arg HYTALE_PATCHLINE=$(HYTALE_PATCHLINE) \
+	  --build-arg HYTALE_SHA256=$(HYTALE_SHA256) \
 	  -t $(REGISTRY)/hytale:$(HYTALE_VERSION) -t $(REGISTRY)/hytale:$(TAG) hytale
 
 # The adapter — prepare checks, argument assembly, the console stop — on a fake

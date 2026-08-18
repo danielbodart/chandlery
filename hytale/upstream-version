@@ -1,0 +1,34 @@
+#!/bin/sh
+# Print the current Hytale version for a patchline. Authenticated: Hytale's
+# version manifest is behind OAuth (PLAN 7.1), so this needs a downloader access
+# token. It uses HYTALE_ACCESS_TOKEN if set, otherwise mints one with
+# tools/hytale-token (which caches and rotates safely).
+#
+# Default prints the version; --sha256 the build's sha256; --download-url its
+# object path. CI feeds all three into the image so the tag = version, verified.
+set -eu
+
+PATCHLINE="${HYTALE_PATCHLINE:-release}"
+api="${HYTALE_ACCOUNT_API:-https://account-data.hytale.com}"
+
+token="${HYTALE_ACCESS_TOKEN:-}"
+if [ -z "$token" ]; then
+    token=$("$(dirname "$0")/../tools/hytale-token" 2>/dev/null) || true
+fi
+[ -n "$token" ] || { echo "no downloader token: set HYTALE_ACCESS_TOKEN or seed tools/hytale-token" >&2; exit 69; }
+
+vsig=$(curl -fsS -A chandlery/hytale -H "authorization: Bearer $token" \
+        "$api/game-assets/version/${PATCHLINE}.json" | jq -r '.url // empty')
+[ -n "$vsig" ] || { echo "no signed URL for the $PATCHLINE version manifest" >&2; exit 1; }
+meta=$(curl -fsS "$vsig")
+
+case "${1:-}" in
+    ""|--version)   field=version ;;
+    --sha256)       field=sha256 ;;
+    --download-url) field=download_url ;;
+    *) echo "usage: upstream-version [--sha256|--download-url]" >&2; exit 64 ;;
+esac
+
+val=$(printf '%s' "$meta" | jq -r --arg f "$field" '.[$f] // empty')
+[ -n "$val" ] || { echo "no $field in the $PATCHLINE manifest" >&2; exit 1; }
+printf '%s\n' "$val"

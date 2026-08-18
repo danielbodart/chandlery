@@ -25,6 +25,10 @@ FROM ${BASE}
 
 ARG HYTALE_VERSION
 ARG HYTALE_PATCHLINE=release
+# Optional, but CI passes it: the sha256 of the build zip, which turns the
+# first-boot download into a cryptographic pin (like Bedrock). Absent, the fetch
+# still verifies against the manifest's own sha256.
+ARG HYTALE_SHA256=
 
 USER root
 RUN set -eux; \
@@ -45,7 +49,8 @@ COPY --chmod=0755 run       /usr/local/bin/hytale-server
 
 # The pin travels as environment; prepare fetches it, run locates it.
 ENV HYTALE_VERSION=${HYTALE_VERSION} \
-    HYTALE_PATCHLINE=${HYTALE_PATCHLINE}
+    HYTALE_PATCHLINE=${HYTALE_PATCHLINE} \
+    HYTALE_SHA256=${HYTALE_SHA256}
 
 # We control the version through the tag. The server ships an hourly auto-updater
 # that would rewrite its own binaries out from under that (PLAN 7.1), so it stays

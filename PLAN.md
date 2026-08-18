@@ -2,7 +2,7 @@
 
 > A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game — baked into an image, versioned, ready to sail.
 
-Status: **building**. Milestones 1-4 are done and tested (skeleton, Bedrock, its CI, Valheim), and milestone 6 — converting Bedrock and Valheim from baking to **pin-and-verify** (§7.3) — is done: both now carry no game content, record which version, and fetch it onto a `/cache` volume on first start through a shared `chandlery-cache` helper in the base. Bedrock is proven end to end against a real Mojang download (fetch → sha256 verify → boot healthy → graceful stop → cache reuse → wrong-sha fails closed); Valheim's SteamCMD depot fetch is written and adapter-tested but wants a first real run on a machine with an unthrottled connection (§7.4). Milestone 5 (Hytale) is now built too: image (Temurin 25, auto-updater disabled, no game content) and adapter (token-passthrough runtime auth, offline mode, console stop), tested offline against a fake server. Three things there await a real run with a downloader token — the live authenticated fetch, the exact field names of the version manifest, and the clean-shutdown command (§7.1, §7.4). The credential half is done: `tools/hytale-token` mints and rotates the downloader token on demand. Milestone 7 is the homelab migration. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
+Status: **building**. Milestones 1-4 are done and tested (skeleton, Bedrock, its CI, Valheim), and milestone 6 — converting Bedrock and Valheim from baking to **pin-and-verify** (§7.3) — is done: both now carry no game content, record which version, and fetch it onto a `/cache` volume on first start through a shared `chandlery-cache` helper in the base. Bedrock is proven end to end against a real Mojang download (fetch → sha256 verify → boot healthy → graceful stop → cache reuse → wrong-sha fails closed); Valheim's SteamCMD depot fetch is written and adapter-tested but wants a first real run on a machine with an unthrottled connection (§7.4). Milestone 5 (Hytale) is now built too: image (Temurin 25, auto-updater disabled, no game content) and adapter (token-passthrough runtime auth, offline mode, console stop), tested offline against a fake server. The download flow is **fully mapped and verified** against the official downloader's live traffic (§7.1): a Cloudflare-R2 signing proxy at `account-data.hytale.com/game-assets/…`, a version manifest carrying `{version, download_url, sha256}`, so Hytale gets a real sha256 pin like Bedrock. `tools/hytale-token` mints and rotates the downloader token on demand (device-login done, refresh token held locally + as a CI secret). Two things still await a real run: the full ~1.5 GB build download+boot, and the clean-shutdown command (`stop` is the current best guess). No `hytale.yml` release workflow yet — it needs a PAT with `secrets:write` for the token's rotation (GITHUB_TOKEN cannot write secrets). Milestone 7 is the homelab migration. This document stays the brief — where it and the code disagree, the code is right and this should be corrected.
 
 ---
 
@@ -252,11 +252,27 @@ $ curl -X POST https://oauth.accounts.hytale.com/oauth2/device/auth \
  "expires_in":599,"interval":5}
 ```
 
-Verified: HTTP 200, a real code. So the build can drive
-`oauth2/token` → `account-data.hytale.com/version/<patchline>.json` →
-signed asset URL itself, and own its token persistence rather than inheriting
-the CLI's credentials-file behaviour. Both the version check *and*
-rebuild-on-release are back on the table.
+Verified: HTTP 200, a real code. And the whole download flow is now mapped, by
+intercepting the official downloader's own traffic (mitmproxy, Go trusting the
+CA via `SSL_CERT_FILE`) — so this is confirmed, not inferred:
+
+1. `GET account-data.hytale.com/game-assets/version/<patchline>.json` (Bearer)
+   returns `{"url": <signed Cloudflare-R2 URL>}` — a **signing proxy**: ask it
+   for any object under `game-assets/`, it hands back a signed R2 URL.
+2. `GET <signed url>` returns the manifest:
+   `{"version":"0.5.9","download_url":"builds/release/0.5.9.zip","sha256":"…"}`.
+3. `GET account-data.hytale.com/game-assets/<download_url>` (Bearer) →
+   `{"url": <signed url>}`; `GET` that → the build zip (release 0.5.9 is
+   **1,523,827,231 bytes**, `application/zip`). The manifest's `sha256` verifies
+   it — so **Hytale gets a cryptographic pin like Bedrock**, not just a version
+   string. `hytale/fetch` drives exactly this; `hytale/upstream-version` reads
+   the manifest for the version, sha256 and download path. We own token
+   persistence (`tools/hytale-token`) rather than inheriting the CLI's
+   credentials file. Version check *and* rebuild-on-release are both in hand.
+
+Note the earlier draft's `account-data.hytale.com/version/<patchline>.json` was
+wrong — the real path is under `game-assets/`, and returns a signed-URL wrapper,
+not the manifest directly.
 
 What survives from the pessimistic version is one operational hazard, not a
 blocker: **the refresh token rotates on every use and the old one dies**. CI has
