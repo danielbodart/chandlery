@@ -7,3 +7,8 @@ dist/
 # build scratch: downloaded server payloads should never be committed
 downloads/
 serverfiles/
+# OAuth token stores — a rotating refresh token must never land in git
+.hytale.token.json
+hytale.json
+*.hytale.json
+*.token.json

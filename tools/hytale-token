@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Print a fresh Hytale downloader *access* token on stdout, refreshing it on
+# demand and rotating the refresh token that backs it.
+#
+# The point: `$SOME_ENV` cannot run code, so it cannot self-refresh — a variable
+# read is an expansion, not a call. This is the command-substitution answer.
+# Use it wherever a fresh token is wanted, and it is minted at that moment:
+#
+#     docker run -e HYTALE_ACCESS_TOKEN="$(tools/hytale-token)" chandlery/hytale:...
+#     curl -H "authorization: Bearer $(tools/hytale-token)" https://account-data.hytale.com/...
+#
+# What actually happens each call:
+#   1. flock the store, so two concurrent calls cannot both spend the rotation.
+#   2. If a cached access token is still comfortably valid, print it and stop —
+#      no network, no rotation. This is why "use it every time" is cheap.
+#   3. Otherwise POST grant_type=refresh_token, get a NEW access token AND a NEW
+#      refresh token (Hytale rotates it and kills the old one), write all of it
+#      back to the store *before* returning, and print the access token.
+#
+# Two stores, one behaviour:
+#   - Local: a JSON file (HYTALE_TOKEN_FILE, default below) holding at least
+#     {"refresh_token": "..."}; access_token and access_expires_at are added and
+#     maintained here. This is the file you already made.
+#   - CI: set HYTALE_DOWNLOADER_REFRESH_TOKEN in the env instead. The env cannot
+#     be written back to, so the rotated refresh token is emitted to the file
+#     named by HYTALE_REFRESH_WRITEBACK (and to $GITHUB_OUTPUT as
+#     `refresh_token=` when present) for a later step to push into the secret.
+set -euo pipefail
+
+CLIENT_ID="${HYTALE_CLIENT_ID:-hytale-downloader}"
+TOKEN_URL="${HYTALE_TOKEN_URL:-https://oauth.accounts.hytale.com/oauth2/token}"
+# Default store: a repo-local .hytale.token.json (git-ignored) if it exists,
+# else the per-user config path. Override with HYTALE_TOKEN_FILE.
+if [ -n "${HYTALE_TOKEN_FILE:-}" ]; then
+    TOKEN_FILE="$HYTALE_TOKEN_FILE"
+elif [ -f "$PWD/.hytale.token.json" ]; then
+    TOKEN_FILE="$PWD/.hytale.token.json"
+else
+    TOKEN_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/chandlery/hytale.json"
+fi
+# Refresh when fewer than this many seconds of access-token life remain.
+SKEW="${HYTALE_TOKEN_SKEW:-120}"
+
+log() { printf 'hytale-token: %s\n' "$*" >&2; }
+now() { date +%s; }
+
+need() { command -v "$1" >/dev/null 2>&1 || { log "need $1 on PATH"; exit 69; }; }
+need curl; need jq
+
+# --- locate the store, and read the current refresh token ------------------
+env_backed=0
+if [ -n "${HYTALE_DOWNLOADER_REFRESH_TOKEN:-}" ]; then
+    env_backed=1
+    # A scratch file so the cache/writeback logic below is identical either way.
+    TOKEN_FILE="${HYTALE_TOKEN_FILE:-$(mktemp)}"
+    if [ ! -s "$TOKEN_FILE" ]; then
+        jq -n --arg rt "$HYTALE_DOWNLOADER_REFRESH_TOKEN" '{refresh_token:$rt}' > "$TOKEN_FILE"
+    fi
+elif [ ! -f "$TOKEN_FILE" ]; then
+    log "no token store: set HYTALE_DOWNLOADER_REFRESH_TOKEN, or create $TOKEN_FILE"
+    log 'with {"refresh_token":"<from the one-time device login>"}'
+    exit 66
+fi
+
+mkdir -p "$(dirname "$TOKEN_FILE")"
+
+# Serialise everything below: the rotation is a read-modify-write on the store,
+# and two of them at once means one refresh token is spent and lost.
+exec 9>"$TOKEN_FILE.lock"
+flock 9
+
+refresh_token=$(jq -r '.refresh_token // empty' "$TOKEN_FILE")
+[ -n "$refresh_token" ] || { log "store has no refresh_token"; exit 66; }
+
+# --- fast path: a still-valid cached access token --------------------------
+access_token=$(jq -r '.access_token // empty' "$TOKEN_FILE")
+expires_at=$(jq -r '.access_expires_at // 0' "$TOKEN_FILE")
+if [ -n "$access_token" ] && [ "$(now)" -lt $(( expires_at - SKEW )) ]; then
+    printf '%s\n' "$access_token"
+    exit 0
+fi
+
+# --- refresh: spend the refresh token for a new pair -----------------------
+log "refreshing access token"
+resp=$(curl -fsS --http1.1 --retry 3 --retry-all-errors -X POST "$TOKEN_URL" \
+        --data-urlencode "client_id=$CLIENT_ID" \
+        --data-urlencode "grant_type=refresh_token" \
+        --data-urlencode "refresh_token=$refresh_token")
+
+new_access=$(printf '%s' "$resp" | jq -r '.access_token // empty')
+new_refresh=$(printf '%s' "$resp" | jq -r '.refresh_token // empty')
+expires_in=$(printf '%s' "$resp" | jq -r '.expires_in // 3600')
+[ -n "$new_access" ] || { log "no access_token in the response"; exit 65; }
+# If the server did not rotate (some do not), keep the one we have.
+[ -n "$new_refresh" ] || new_refresh="$refresh_token"
+
+new_expires_at=$(( $(now) + expires_in ))
+
+# Write the store back atomically, BEFORE the token is handed out, so a crash
+# after this point cannot leave a spent refresh token as the stored one.
+tmp=$(mktemp "$TOKEN_FILE.XXXXXX")
+jq -n --arg rt "$new_refresh" --arg at "$new_access" --argjson exp "$new_expires_at" \
+    '{refresh_token:$rt, access_token:$at, access_expires_at:$exp}' > "$tmp"
+chmod 600 "$tmp"
+mv -f "$tmp" "$TOKEN_FILE"
+
+# CI cannot write an env var back to its secret store; surface the rotated
+# refresh token so a workflow step can push it into the secret itself.
+if [ "$env_backed" = 1 ] && [ "$new_refresh" != "$refresh_token" ]; then
+    [ -n "${HYTALE_REFRESH_WRITEBACK:-}" ] && printf '%s\n' "$new_refresh" > "$HYTALE_REFRESH_WRITEBACK"
+    [ -n "${GITHUB_OUTPUT:-}" ] && printf 'refresh_token=%s\n' "$new_refresh" >> "$GITHUB_OUTPUT"
+fi
+
+printf '%s\n' "$new_access"
