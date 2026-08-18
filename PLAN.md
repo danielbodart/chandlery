@@ -237,13 +237,51 @@ runtime solved by token passthrough, a hand-baked Hytale image is a complete,
 coherent Chandlery image; the single thing it lacks is noticing a release by
 itself. Only A can restore that, and only if such a credential exists.
 
-**Other facts worth carrying forward:** the server is `HytaleServer.jar` +
-`Assets.zip` on **Java 25**, wants ~4 GB RAM, and listens on **UDP 5520
-(QUIC)** — worth re-checking against Tidewaiter's detectors. It runs on arm64,
-though the downloader ships amd64 only. It has a console (`/auth status`,
-`/auth logout`), which suits the base skeleton's console FIFO. Sessions should
-be terminated on shutdown (`DELETE sessions.hytale.com/game-session`), so
-confirm whether the server does that itself before writing a stop hook.
+#### What the image looks like, once the download question is settled
+
+From the
+[Server Manual](https://support.hytale.com/hc/en-us/articles/45326769420827-Hytale-Server-Manual).
+None of this is blocked; it is what to build when §7.1 is decided.
+
+**The server ships its own auto-updater, and we have to turn it off.** It polls
+hourly, stages a download, exits with code 8, and a wrapper script swaps the
+files in and restarts. Its `AutoApplyMode: WhenEmpty` applies the update *when
+no players are online* — which is, precisely, Tidewaiter's job, built into the
+game. For Chandlery it is not a feature but a hazard: a container that rewrites
+its own binaries has quietly stopped being the version on its tag. Set
+`HYTALE_DISABLE_UPDATES` (or `Update.Enabled: false`), run the jar directly
+rather than through `start.sh`, and let CI and the deployer do what they do for
+the other two games. Worth a look at `WhenEmpty` as prior art for Tidewaiter
+regardless.
+
+**`/data` is easier than Bedrock's.** The server writes `universe/` (worlds and
+players), `config.json`, `permissions.json`, `bans.json`, `whitelist.json`,
+`logs/`, `mods/` and `.cache/` relative to its working directory, and `--assets`
+takes a path. So the jar and assets live in the image, the working directory is
+`/data`, and everything lands on the volume with no symlinks.
+
+**It is a big image.** `Assets.zip` alone is **3.3 GB** — five times the whole
+Bedrock image. That makes §7.2's layering question sharper here than anywhere
+else: assets that large, changing rarely, want a layer of their own.
+
+**Health:** no protocol probe in the box. Hypixel points at a third-party
+`Nitrado:Query` plugin that exposes status over HTTP, which would qualify under
+§3's rule; without it, ship no `HEALTHCHECK` and let the deployer's port-bound
+check stand. QUIC over UDP 5520 by default (`--bind`), which is what Tidewaiter's
+detector has to cope with.
+
+**Odds and ends:** Java 25, arm64 as well as x64, ~4 GB RAM minimum, and a
+pre-trained AOT cache (`-XX:AOTCache=HytaleServer.aot`) worth using for boot
+time. `--auth-mode offline` exists, which makes a LAN or test server possible
+with no credentials at all — useful for our own tests. `--disable-sentry` stops
+crash reports going to Hypixel. The manual documents no clean-shutdown command,
+so the stop hook still needs establishing; the console that `/auth` and
+`/update` use suits the base skeleton's FIFO.
+
+**Other facts worth carrying forward:** the server has a console (`/auth
+status`, `/auth logout`), and sessions should be terminated on shutdown
+(`DELETE sessions.hytale.com/game-session`) — confirm whether the server does
+that itself before writing a stop hook.
 
 ---
 
