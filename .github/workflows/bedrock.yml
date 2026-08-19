@@ -78,17 +78,25 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: built
-        name: Skip versions already published
+        name: Skip when this game version AND this code are already built
+        env:
+          FORCE: ${{ inputs.force }}
+          VERSION: ${{ steps.upstream.outputs.version }}
         run: |
-          if [ "${{ inputs.force }}" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
+          # The immutable tag is <game-version>-<our-revision>. It exists only if
+          # this exact game version was already built from this exact repo state,
+          # so its presence means nothing changed — game bump or a code change both
+          # give a tag that does not exist yet, and both build.
+          rev="${GITHUB_SHA::7}"
+          if [ "$FORCE" = "true" ]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "Building regardless: forced, or the image definition changed."
-          elif docker buildx imagetools inspect "${IMAGE}:${{ steps.upstream.outputs.version }}" >/dev/null 2>&1; then
+            echo "Building: forced."
+          elif docker buildx imagetools inspect "${IMAGE}:${VERSION}-${rev}" >/dev/null 2>&1; then
             echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "${IMAGE}:${{ steps.upstream.outputs.version }} already exists; nothing to do."
+            echo "${IMAGE}:${VERSION}-${rev} already exists; nothing changed."
           else
             echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "New version. Building."
+            echo "New game version or new code (${VERSION}-${rev}). Building."
           fi
 
   build:
@@ -115,14 +123,21 @@ jobs:
           SHA256: ${{ needs.resolve.outputs.sha256 }}
         run: |
           docker build -t chandlery/base:ci base
+          rev="${GITHUB_SHA::7}"
           # BDS is x86-64 only; there is no ARM server build to fall back to.
+          # Three tags: the moving game version, the immutable <version>-<rev>,
+          # and latest. The full SHA is the revision label.
           docker build \
             --build-arg BASE=chandlery/base:ci \
             --build-arg BEDROCK_VERSION="$VERSION" \
             --build-arg BEDROCK_SHA256="$SHA256" \
             --build-arg SOURCE_DATE_EPOCH=0 \
-            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" -f bedrock/Dockerfile .
+            --build-arg CHANDLERY_REVISION="$GITHUB_SHA" \
+            -t "${IMAGE}:${VERSION}" \
+            -t "${IMAGE}:${VERSION}-${rev}" \
+            -t "${IMAGE}:latest" -f bedrock/Dockerfile .
           docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:${VERSION}-${rev}"
           docker push "${IMAGE}:latest"
 
       - name: Say what shipped

@@ -62,6 +62,8 @@ ARG VALHEIM_BUILD_ID
 ARG VALHEIM_MANIFEST_GID
 ARG VALHEIM_APP_ID=896660
 ARG VALHEIM_DEPOT_ID=896661
+# Our packaging revision (the repo's git SHA) — see bedrock/Dockerfile.
+ARG CHANDLERY_REVISION=
 
 USER root
 # The Valheim server's own runtime deps (per Iron Gate's image). No SteamCMD,
@@ -123,6 +125,7 @@ WORKDIR /data
 
 LABEL org.opencontainers.image.title="Valheim Dedicated Server" \
       org.opencontainers.image.version="${VALHEIM_VERSION}" \
+      org.opencontainers.image.revision="${CHANDLERY_REVISION}" \
       org.opencontainers.image.source="https://github.com/danielbodart/chandlery" \
       org.opencontainers.image.licenses="Apache-2.0" \
       dev.chandlery.valheim.build-id="${VALHEIM_BUILD_ID}" \

@@ -10,6 +10,12 @@ TAG      ?= test
 # A constant, not $(shell date): a build epoch that moved every run would defeat it.
 SOURCE_DATE_EPOCH ?= 0
 
+# Our packaging revision — the repo's git SHA. The image tag is
+# <game-version>-<revision>, so a rebuild of the same game version with improved
+# tooling ships a distinct, immutable image while the game version stays obvious.
+# Recorded as org.opencontainers.image.revision; the .version label is the game.
+CHANDLERY_REVISION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+
 # Only needed behind a TLS-terminating proxy; empty everywhere else.
 EXTRA_CA ?= $(wildcard /root/.ccr/ca-bundle.crt)
 BUILD_SECRETS = $(if $(EXTRA_CA),--secret id=extra-ca$(comma)src=$(EXTRA_CA),)
@@ -61,7 +67,10 @@ bedrock: base
 	  --build-arg BEDROCK_VERSION=$(BEDROCK_VERSION) \
 	  --build-arg BEDROCK_SHA256=$(BEDROCK_SHA256) \
 	  --build-arg SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
-	  -t $(REGISTRY)/bedrock:$(BEDROCK_VERSION) -t $(REGISTRY)/bedrock:$(TAG) -f bedrock/Dockerfile .
+	  --build-arg CHANDLERY_REVISION=$(CHANDLERY_REVISION) \
+	  -t $(REGISTRY)/bedrock:$(BEDROCK_VERSION) \
+	  -t $(REGISTRY)/bedrock:$(BEDROCK_VERSION)-$(CHANDLERY_REVISION) \
+	  -t $(REGISTRY)/bedrock:$(TAG) -f bedrock/Dockerfile .
 
 test-bedrock: bedrock
 	docker build --build-arg BASE=$(REGISTRY)/bedrock:$(TAG) \
@@ -75,8 +84,11 @@ valheim: base
 	  --build-arg VALHEIM_MANIFEST_GID=$(VALHEIM_MANIFEST_GID) \
 	  --build-arg STEAM_USERNAME=$(STEAM_USERNAME) \
 	  --build-arg SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
+	  --build-arg CHANDLERY_REVISION=$(CHANDLERY_REVISION) \
 	  $(if $(STEAM_TOKEN),--secret id=steam-token$(comma)src=$(STEAM_TOKEN),) \
-	  -t $(REGISTRY)/valheim:$(VALHEIM_VERSION) -t $(REGISTRY)/valheim:$(TAG) -f valheim/Dockerfile .
+	  -t $(REGISTRY)/valheim:$(VALHEIM_VERSION) \
+	  -t $(REGISTRY)/valheim:$(VALHEIM_VERSION)-$(CHANDLERY_REVISION) \
+	  -t $(REGISTRY)/valheim:$(TAG) -f valheim/Dockerfile .
 
 # The adapter — prepare checks, argument assembly, stop signal, health probe —
 # on a fake server, so it is testable without a 1.6 GB download.
@@ -99,8 +111,11 @@ hytale: base
 	  --build-arg HYTALE_PATCHLINE=$(HYTALE_PATCHLINE) \
 	  --build-arg HYTALE_SHA256=$(HYTALE_SHA256) \
 	  --build-arg SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
+	  --build-arg CHANDLERY_REVISION=$(CHANDLERY_REVISION) \
 	  $(if $(HYTALE_TOKEN),--secret id=hytale-token$(comma)src=$(HYTALE_TOKEN),) \
-	  -t $(REGISTRY)/hytale:$(HYTALE_VERSION) -t $(REGISTRY)/hytale:$(TAG) -f hytale/Dockerfile .
+	  -t $(REGISTRY)/hytale:$(HYTALE_VERSION) \
+	  -t $(REGISTRY)/hytale:$(HYTALE_VERSION)-$(CHANDLERY_REVISION) \
+	  -t $(REGISTRY)/hytale:$(TAG) -f hytale/Dockerfile .
 
 # The adapter — prepare checks, argument assembly, the console stop — on a fake
 # server, so it is testable without a downloader token or the 3.3 GB download.

@@ -75,27 +75,29 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: built
-        name: Skip builds already published
+        name: Skip when this game build AND this code are already published
         env:
           FORCE: ${{ inputs.force }}
-          EVENT: ${{ github.event_name }}
           BUILD_ID: ${{ steps.upstream.outputs.build_id }}
         run: |
-          # The tag is the game version, which we do not know without downloading.
-          # So the "already built?" check reads the build id we recorded as a label
-          # on the published :latest — no extra marker tag needed.
-          if [ "$FORCE" = "true" ] || [ "$EVENT" = "push" ]; then
+          # The tag is the game version, which we do not know without downloading,
+          # so the "already built?" check reads two labels off the published
+          # :latest — the Steam build id (the game) and our revision (the code).
+          # Both matching means nothing changed; a new game build OR a code change
+          # rebuilds. No EVENT=push special-case: a triggering push has a new SHA.
+          if [ "$FORCE" = "true" ]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "Building regardless: forced, or the image definition changed."
+            echo "Building: forced."
           else
-            published=$(docker buildx imagetools inspect "${IMAGE}:latest" \
-              --format '{{ index .Image.Config.Labels "dev.chandlery.valheim.build-id" }}' 2>/dev/null || echo "")
-            if [ "$published" = "$BUILD_ID" ]; then
+            meta=$(docker buildx imagetools inspect "${IMAGE}:latest" \
+              --format '{{ index .Image.Config.Labels "dev.chandlery.valheim.build-id" }} {{ index .Image.Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || echo "")
+            pub_build="${meta%% *}"; pub_rev="${meta##* }"
+            if [ "$pub_build" = "$BUILD_ID" ] && [ "$pub_rev" = "$GITHUB_SHA" ]; then
               echo "needed=false" >> "$GITHUB_OUTPUT"
-              echo "build ${BUILD_ID} already published (latest's build-id label); nothing to do."
+              echo "build ${BUILD_ID} at this revision already published; nothing changed."
             else
               echo "needed=true" >> "$GITHUB_OUTPUT"
-              echo "New build (${published:-none} -> ${BUILD_ID}). Building."
+              echo "New game build (${pub_build:-none} -> ${BUILD_ID}) or new code. Building."
             fi
           fi
 
@@ -145,6 +147,7 @@ jobs:
             --build-arg VALHEIM_MANIFEST_GID="$MANIFEST_GID" \
             --build-arg STEAM_USERNAME="$STEAM_USERNAME" \
             --build-arg SOURCE_DATE_EPOCH=0 \
+            --build-arg CHANDLERY_REVISION="$GITHUB_SHA" \
             --secret id=steam-token,src="$RUNNER_TEMP/steam-token" \
             -t valheim:built -f valheim/Dockerfile .
           rm -f "$RUNNER_TEMP/steam-token"
@@ -165,17 +168,21 @@ jobs:
           # Stamp the version onto the built image in one metadata layer, and tag
           # it. No re-fetch, no re-copy — this is the whole "set the version once,
           # after we have it" step. The Dockerfile is fed on stdin (no context).
+          # The revision label rode in from the main build, so it is inherited.
+          # Three tags: moving game version, immutable <version>-<rev>, latest.
+          rev="${GITHUB_SHA::7}"
           printf 'FROM valheim:built\nENV VALHEIM_VERSION=%s\nLABEL org.opencontainers.image.version=%s\n' \
             "$version" "$version" \
-            | docker build -t "${IMAGE}:${version}" -t "${IMAGE}:latest" -
+            | docker build -t "${IMAGE}:${version}" -t "${IMAGE}:${version}-${rev}" -t "${IMAGE}:latest" -
 
           # Push :latest last so the registry's default view lands on it.
           docker push "${IMAGE}:${version}"
+          docker push "${IMAGE}:${version}-${rev}"
           docker push "${IMAGE}:latest"
 
           {
-            echo "### Valheim ${version}"
+            echo "### Valheim ${version}-${rev}"
             echo ""
-            echo "- \`${IMAGE}:${version}\`  (build ${BUILD_ID})"
+            echo "- \`${IMAGE}:${version}-${rev}\`  (build ${BUILD_ID})"
             echo "- depot 896661 manifest gid \`${MANIFEST_GID}\`"
           } >> "$GITHUB_STEP_SUMMARY"

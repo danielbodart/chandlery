@@ -51,6 +51,10 @@ RUN bake-layout /stage /buckets /bin-layer "${ASSET_BUCKETS}" "${SOURCE_DATE_EPO
 FROM ${BASE}
 
 ARG BEDROCK_VERSION
+# Our packaging revision (the repo's git SHA). The image version label stays the
+# game version; this records which build definition produced the image, so tags
+# and `docker inspect` can tell two builds of the same game version apart.
+ARG CHANDLERY_REVISION=
 
 USER root
 
@@ -106,6 +110,7 @@ WORKDIR /data
 # BDS is x86-64 only; there is no ARM build to fall back to.
 LABEL org.opencontainers.image.title="Minecraft Bedrock Dedicated Server" \
       org.opencontainers.image.version="${BEDROCK_VERSION}" \
+      org.opencontainers.image.revision="${CHANDLERY_REVISION}" \
       org.opencontainers.image.source="https://github.com/danielbodart/chandlery" \
       org.opencontainers.image.licenses="Apache-2.0"
 

@@ -101,9 +101,14 @@ jobs:
           sha="$(./hytale/upstream-version --sha256)"
           echo "Hytale $HYTALE_PATCHLINE is on $version (sha256 $sha)"
 
-          if [ "$FORCE" != "true" ] && [ "$EVENT" != "push" ] \
-             && docker buildx imagetools inspect "${IMAGE}:${version}" >/dev/null 2>&1; then
-            echo "${IMAGE}:${version} already exists; nothing to do."
+          # The immutable tag is <game-version>-<our-revision>; it exists only if
+          # this game version was already built from this repo state, so a game
+          # bump or a code change both give a new tag and build. (No EVENT=push
+          # special-case needed — a triggering push has a new SHA, hence new tag.)
+          rev="${GITHUB_SHA::7}"
+          if [ "$FORCE" != "true" ] \
+             && docker buildx imagetools inspect "${IMAGE}:${version}-${rev}" >/dev/null 2>&1; then
+            echo "${IMAGE}:${version}-${rev} already exists; nothing changed."
             exit 0
           fi
 
@@ -118,11 +123,15 @@ jobs:
             --build-arg HYTALE_PATCHLINE="$HYTALE_PATCHLINE" \
             --build-arg HYTALE_SHA256="$sha" \
             --build-arg SOURCE_DATE_EPOCH=0 \
+            --build-arg CHANDLERY_REVISION="$GITHUB_SHA" \
             --secret id=hytale-token,src="$RUNNER_TEMP/hytale-token" \
-            -t "${IMAGE}:${version}" -t "${IMAGE}:latest" -f hytale/Dockerfile .
+            -t "${IMAGE}:${version}" \
+            -t "${IMAGE}:${version}-${rev}" \
+            -t "${IMAGE}:latest" -f hytale/Dockerfile .
           rm -f "$RUNNER_TEMP/hytale-token"
 
           docker push "${IMAGE}:${version}"
+          docker push "${IMAGE}:${version}-${rev}"
           docker push "${IMAGE}:latest"
 
           {

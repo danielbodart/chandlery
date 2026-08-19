@@ -52,6 +52,8 @@ FROM ${BASE}
 ARG HYTALE_VERSION
 ARG HYTALE_PATCHLINE=release
 ARG HYTALE_SHA256=
+# Our packaging revision (the repo's git SHA) — see bedrock/Dockerfile.
+ARG CHANDLERY_REVISION=
 
 USER root
 
@@ -112,6 +114,7 @@ WORKDIR /data
 
 LABEL org.opencontainers.image.title="Hytale Dedicated Server" \
       org.opencontainers.image.version="${HYTALE_VERSION}" \
+      org.opencontainers.image.revision="${CHANDLERY_REVISION}" \
       org.opencontainers.image.source="https://github.com/danielbodart/chandlery" \
       org.opencontainers.image.licenses="Apache-2.0"
 
