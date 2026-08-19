@@ -1,7 +1,7 @@
 #!/bin/sh
-# Become the Hytale server, from the version fetched to /cache by the prepare
-# hook. exec matters: the entrypoint wired the console FIFO to this process's
-# stdin, and the stop hook signals this pid.
+# Become the Hytale server, from the version baked into the image. exec matters:
+# the entrypoint wired the console FIFO to this process's stdin, and the stop hook
+# signals this pid.
 #
 # The official start.sh launches `java -jar Server/HytaleServer.jar
 # --assets ../Assets.zip --backup …` from inside the Server/ directory, looping
