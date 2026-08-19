@@ -21,11 +21,17 @@ run_fake() {
 
 echo "hytale adapter"
 
-it "refuses to start online without the two server tokens, and says which"
-out=$(docker run --rm "$FAKE" 2>&1 || true)
-assert_contains "$out" "HYTALE_SERVER_SESSION_TOKEN" \
-    && assert_contains "$out" "HYTALE_SERVER_IDENTITY_TOKEN" \
-    && refute_contains "$out" "fake-hytale: listening" && pass
+it "boots online-unauthenticated when the server tokens are absent, and says how"
+# Env tokens are optional: the game authenticates online-unauthenticated and can
+# be logged in later with `/auth login` on the console, so a missing token warns
+# and boots rather than refusing. Online, so no --auth-mode offline on argv.
+run_fake
+if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
+    logs=$(docker logs "$CONTAINER" 2>&1)
+    args=$(echo "$logs" | sed -n 's/^fake-java: args //p')
+    assert_contains "$logs" "/auth login" \
+        && refute_contains "$args" "--auth-mode offline" && pass
+fi
 
 it "starts in offline mode with no credentials at all"
 run_fake -e HYTALE_AUTH_MODE=offline

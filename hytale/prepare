@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs as the game user before the server starts. The game is baked at
-# /opt/hytale, so there is nothing to fetch — this checks the runtime auth env
+# /opt/hytale, so there is nothing to fetch — this notes the runtime auth env
 # (unless offline) and lays out /data.
 set -eu
 
@@ -13,19 +13,23 @@ game=/opt/hytale
 
 mode="${HYTALE_AUTH_MODE:-online}"
 
-# Server-session auth is token passthrough (PLAN 7.1): the deployer injects two
-# tokens, exactly like Valheim's password. The server reads them from the
-# environment itself, so we only check they are present — we never put them on a
-# command line, where argv is world-readable. Offline mode needs neither.
+# Server-session auth is token passthrough (PLAN 7.1): a deployer MAY inject two
+# tokens, exactly like Valheim's password, and the server reads them from the
+# environment itself — never a command line, where argv is world-readable.
+#
+# But env tokens are only one way in, and they are NOT required. The game also
+# authenticates at runtime with `/auth login` on the console (persisting to its
+# own AuthCredentialStore under /data), and it boots online-unauthenticated
+# until then — it warns and runs, which is exactly what LAN and direct-connect
+# servers want. So online mode never blocks on the tokens; we only note when
+# they are absent, and point at the two ways to authenticate. Offline mode needs
+# no credentials at all.
 if [ "$mode" != "offline" ]; then
-    missing=
-    [ -n "${HYTALE_SERVER_SESSION_TOKEN:-}" ]  || missing="$missing HYTALE_SERVER_SESSION_TOKEN"
-    [ -n "${HYTALE_SERVER_IDENTITY_TOKEN:-}" ] || missing="$missing HYTALE_SERVER_IDENTITY_TOKEN"
-    if [ -n "$missing" ]; then
-        log "ERROR: missing server auth env:$missing"
-        log "ERROR: inject them from a provisioning device-login (PLAN 7.1),"
-        log "ERROR: or set HYTALE_AUTH_MODE=offline for a LAN or test server."
-        exit 78
+    if [ -z "${HYTALE_SERVER_SESSION_TOKEN:-}" ] || [ -z "${HYTALE_SERVER_IDENTITY_TOKEN:-}" ]; then
+        log "no server session tokens in the environment; booting online-unauthenticated."
+        log "authenticate at runtime with:  chandlery-console /auth login"
+        log "(or inject HYTALE_SERVER_SESSION_TOKEN + HYTALE_SERVER_IDENTITY_TOKEN,"
+        log " or set HYTALE_AUTH_MODE=offline for a LAN or test server)."
     fi
 fi
 
