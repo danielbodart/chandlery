@@ -120,7 +120,12 @@ RUN set -eux; \
 # ---- runtime: base + health probe + baked buckets + adapter ----
 FROM ${BASE}
 
-ARG VALHEIM_VERSION
+# The version is the human game version (e.g. 0.221.12), which is only knowable
+# by booting the server (valheim/game-version) — so it is NOT a pin and NOT
+# required here. It defaults to "dev"; a caller who knows it (a local build, or
+# CI after reading it) sets it for the tag and the OCI version label. The real
+# pin is the manifest gid below, which the fetch stage fetches by content.
+ARG VALHEIM_VERSION=dev
 ARG VALHEIM_BUILD_ID
 ARG VALHEIM_MANIFEST_GID
 ARG VALHEIM_APP_ID=896660
@@ -128,7 +133,6 @@ ARG VALHEIM_DEPOT_ID=896661
 
 USER root
 RUN set -eux; \
-    test -n "${VALHEIM_VERSION}"      || { echo "VALHEIM_VERSION build-arg is required" >&2; exit 64; }; \
     test -n "${VALHEIM_BUILD_ID}"     || { echo "VALHEIM_BUILD_ID build-arg is required" >&2; exit 64; }; \
     test -n "${VALHEIM_MANIFEST_GID}" || { echo "VALHEIM_MANIFEST_GID build-arg is required" >&2; exit 64; }; \
     apt-get update; \

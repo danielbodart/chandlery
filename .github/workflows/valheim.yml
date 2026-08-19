@@ -114,10 +114,14 @@ jobs:
       # The image bakes the game, so the fetch runs at BUILD: STEAM_USERNAME is a
       # build-arg, and STEAM_LOGIN_TOKEN (base64 of the DepotDownloader
       # account.config) is decoded to a file and mounted as the steam-token build
-      # secret — neither rides into the image. Reading the game version still means
-      # booting the server once, but now the baked staging image already carries
-      # the game, so the run needs no Steam credential. The version-tagged rebuild
-      # hits BuildKit's cache on the (identical) fetch stage, so it is nearly free.
+      # secret — neither rides into the image.
+      #
+      # The game is built ONCE. Its human version (e.g. 0.221.12) is only knowable
+      # by booting the server, and it is baked into nothing but the OCI version
+      # label — so rather than rebuild the whole image to set it, we boot the built
+      # image, read the version, and stamp it onto the built image in one trivial
+      # metadata layer (FROM <built> + LABEL/ENV). That is the tag-and-label step,
+      # done once, after we actually have the version.
       - name: Build, read the version, and push Valheim
         env:
           DOCKER_BUILDKIT: "1"
@@ -132,40 +136,38 @@ jobs:
           printf '%s' "$STEAM_LOGIN_TOKEN" | base64 -d > "$RUNNER_TEMP/steam-token"
 
           docker build -t chandlery/base:ci base
-          # The server is an x86-64 build; there is no ARM one.
+          # The server is an x86-64 build; there is no ARM one. VALHEIM_VERSION is
+          # left at its default — we do not know it yet, and it is not a pin.
           docker build \
             --build-arg BASE=chandlery/base:ci \
-            --build-arg VALHEIM_VERSION=staging \
             --build-arg VALHEIM_BUILD_ID="$BUILD_ID" \
             --build-arg VALHEIM_MANIFEST_GID="$MANIFEST_GID" \
             --build-arg STEAM_USERNAME="$STEAM_USERNAME" \
             --build-arg SOURCE_DATE_EPOCH=0 \
             --secret id=steam-token,src="$RUNNER_TEMP/steam-token" \
-            -t valheim:staging valheim
+            -t valheim:built valheim
+          rm -f "$RUNNER_TEMP/steam-token"
 
-          echo "Running the staging server to read the game version..."
-          cid=$(docker run -d -e VALHEIM_PASSWORD=chandleryci valheim:staging)
+          echo "Running the built server to read the game version..."
+          cid=$(docker run -d -e VALHEIM_PASSWORD=chandleryci valheim:built)
           version=""
           for _ in $(seq 1 60); do
             sleep 10
             line=$(docker logs "$cid" 2>&1 | grep -oE 'Valheim version: l-[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
             if [ -n "$line" ]; then version="${line##*l-}"; break; fi
-            docker ps -q --no-trunc | grep -q "$cid" || { echo "staging server exited early:"; docker logs "$cid" 2>&1 | tail -30; exit 1; }
+            docker ps -q --no-trunc | grep -q "$cid" || { echo "server exited early:"; docker logs "$cid" 2>&1 | tail -30; exit 1; }
           done
           docker rm -f "$cid" >/dev/null 2>&1 || true
           [ -n "$version" ] || { echo "could not read the Valheim version"; exit 1; }
           echo "Game version: $version"
 
-          docker build \
-            --build-arg BASE=chandlery/base:ci \
-            --build-arg VALHEIM_VERSION="$version" \
-            --build-arg VALHEIM_BUILD_ID="$BUILD_ID" \
-            --build-arg VALHEIM_MANIFEST_GID="$MANIFEST_GID" \
-            --build-arg STEAM_USERNAME="$STEAM_USERNAME" \
-            --build-arg SOURCE_DATE_EPOCH=0 \
-            --secret id=steam-token,src="$RUNNER_TEMP/steam-token" \
-            -t "${IMAGE}:${version}" -t "${IMAGE}:latest" valheim
-          rm -f "$RUNNER_TEMP/steam-token"
+          # Stamp the version onto the built image in one metadata layer, and tag
+          # it. No re-fetch, no re-copy — this is the whole "set the version once,
+          # after we have it" step. The Dockerfile is fed on stdin (no context).
+          printf 'FROM valheim:built\nENV VALHEIM_VERSION=%s\nLABEL org.opencontainers.image.version=%s\n' \
+            "$version" "$version" \
+            | docker build -t "${IMAGE}:${version}" -t "${IMAGE}:latest" -
+
           # Push :latest last so the registry's default view lands on it.
           docker push "${IMAGE}:${version}"
           docker push "${IMAGE}:latest"
