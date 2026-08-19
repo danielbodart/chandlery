@@ -83,6 +83,10 @@ jobs:
           # the pipeline out.
           export HYTALE_REFRESH_WRITEBACK="$RUNNER_TEMP/newrt"
           access="$(tools/hytale-token)"
+          # The access token is minted, not a registered secret, so GitHub does
+          # not auto-mask it. Register it now, before any step (the docker build
+          # included) could echo it, so it is redacted everywhere in the log.
+          echo "::add-mask::$access"
           if [ -s "$HYTALE_REFRESH_WRITEBACK" ]; then
             gh secret set HYTALE_DOWNLOADER_REFRESH_TOKEN --repo "$REPO" < "$HYTALE_REFRESH_WRITEBACK"
             echo "rotated refresh token written back to the secret"

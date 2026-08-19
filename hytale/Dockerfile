@@ -54,7 +54,11 @@ RUN set -eux; \
 # URL for the version manifest -> {version,download_url,sha256} -> a signed URL
 # for the build -> the zip. Fail closed if the patchline has moved off the pinned
 # version, or the sha256 does not match.
-RUN --mount=type=secret,id=hytale-token,required=true set -eux; \
+#
+# set -eu, NOT -eux: this handles the Bearer token and passes it to curl on the
+# command line, and xtrace would print the token (and the signed URLs) into the
+# build log. Milestones are logged explicitly with echo instead.
+RUN --mount=type=secret,id=hytale-token,required=true set -eu; \
     token=$(cat /run/secrets/hytale-token); \
     api="${HYTALE_ACCOUNT_API:-https://account-data.hytale.com}"; \
     signed_url() { curl -fsS -A chandlery/hytale -H "authorization: Bearer $token" "$api/game-assets/$1" | jq -r '.url // empty'; }; \
