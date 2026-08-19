@@ -27,6 +27,7 @@ on:
     branches: [master]
     paths:
       - 'base/**'
+      - 'build/**'
       - 'valheim/**'
       - '.github/workflows/valheim.yml'
 
