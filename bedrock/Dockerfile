@@ -45,7 +45,8 @@ RUN apt-get update \
 
 COPY --chmod=0755 build/bucketize build/bake-layout bedrock/fetch /usr/local/bin/
 RUN fetch /stage
-RUN bake-layout /stage /buckets /bin-layer "${ASSET_BUCKETS}" "${SOURCE_DATE_EPOCH}" bedrock_server
+# depth 2: Bedrock's churn clusters at depth-2 (per-pack, version-named dirs).
+RUN bake-layout /stage /buckets /bin-layer "${ASSET_BUCKETS}" "${SOURCE_DATE_EPOCH}" 2 bedrock_server
 
 # ---- runtime: base + monitor + baked layers + adapter ----
 FROM ${BASE}

@@ -51,8 +51,8 @@ RUN apt-get update \
 
 COPY --chmod=0755 build/bucketize build/bake-layout valheim/fetch /usr/local/bin/
 RUN --mount=type=secret,id=steam-token,required=true fetch /stage
-# No binary split (see header): the whole tree buckets by subtree.
-RUN bake-layout /stage /buckets /bin-layer "${ASSET_BUCKETS}" "${SOURCE_DATE_EPOCH}"
+# No binary split (see header): the whole tree buckets by subtree, depth 2.
+RUN bake-layout /stage /buckets /bin-layer "${ASSET_BUCKETS}" "${SOURCE_DATE_EPOCH}" 2
 
 # ---- runtime: base + health probe + baked layers + adapter ----
 FROM ${BASE}

@@ -3,14 +3,16 @@
 # Dockerfile then COPYs, one COPY per layer. This is the step every game shares,
 # so it lives here rather than inline in three Dockerfiles.
 #
-#   bake-layout <stage> <buckets-out> <bin-out> <N> <epoch> [binary-rel-path...]
+#   bake-layout <stage> <buckets-out> <bin-out> <N> <epoch> <depth> [binary-rel-path...]
 #
 # 1. Each binary path (relative to <stage>) that exists is moved into <bin-out>,
 #    keeping its relative path, so the Dockerfile can give it its own top layer —
 #    it changes every build while the assets around it do not. A listed path that
 #    is absent is skipped (the fetch script is what enforces the essential ones).
-# 2. Everything left in <stage> is distributed into <N> subtree-hash buckets
-#    (see bucketize), so an unchanged subtree bakes to a dedupe-able layer.
+# 2. Everything left in <stage> is distributed into <N> depth-<depth> subtree-hash
+#    buckets (see bucketize), so an unchanged subtree bakes to a dedupe-able layer.
+#    depth is per game: 2 for Bedrock/Valheim (churn clusters shallow), deeper for
+#    Hytale, whose mass sits in a few deep branches (Assets/Server/Prefabs/...).
 # 3. Every mtime — files and dirs, in both trees — is normalised to <epoch>, so a
 #    byte-identical layer hashes the same across versions and the registry dedupes
 #    it. Without this, unzip/extract stamps each build's time and nothing dedupes.
@@ -21,7 +23,8 @@ buckets=$2
 binout=$3
 N=$4
 epoch=$5
-shift 5
+depth=$6
+shift 6
 
 log() { printf '[bake-layout] %s\n' "$*" >&2; }
 
@@ -35,7 +38,7 @@ for rel in "$@"; do
     fi
 done
 
-bucketize "$stage" "$buckets" "$N"
+bucketize "$stage" "$buckets" "$N" "$depth"
 rm -rf "$stage"
 
 find "$buckets" "$binout" -exec touch --no-dereference -h -d "@${epoch}" {} +

@@ -1,24 +1,33 @@
 #!/bin/sh
 # Build-time only. Distribute a staging tree into N bucket dirs by a stable hash
-# of each file's depth-2 subtree (resource_packs/vanilla, behavior_packs/foo, or
-# a top-level file's own name), so every version bakes the same subtree into the
-# same bucket. An unchanged subtree then lands in a byte-identical COPY layer the
-# registry dedupes across versions; churn only re-pulls the bucket it falls in.
+# of each file's depth-<DEPTH> subtree, so every version bakes the same subtree
+# into the same bucket. An unchanged subtree then lands in a byte-identical COPY
+# layer the registry dedupes across versions; churn only re-pulls the bucket it
+# falls in.
 #
-# Bounded (N layers, not one-per-pack) and adaptive (hashes names, so new packs
-# and new version-stamped dirs need no Dockerfile edit). See bedrock/Dockerfile.
+#   bucketize <src> <out> <N> [DEPTH]
 #
-#   bucketize <src> <out> [N]
+# DEPTH is how many leading path components form the bucket key (default 2):
+#   DEPTH=2  resource_packs/vanilla/**  -> key resource_packs/vanilla
+#   DEPTH=4  Assets/Server/Prefabs/Npc/** -> key Assets/Server/Prefabs/Npc
+# A whole depth-DEPTH subtree moves as one unit (its deeper files inherit its
+# bucket); files shallower than DEPTH bucket on their own path. Shallower DEPTH
+# keeps clustered churn together (fewer, coarser buckets); deeper DEPTH spreads a
+# lopsided tree whose mass sits in a few deep branches (e.g. Hytale's assets).
+#
+# Bounded (N layers, not one-per-file) and adaptive (hashes paths, so new packs
+# and version-stamped dirs need no Dockerfile edit). See build/bake-layout.
 #
 # Moves the contents of <src> into <out>/00 .. <out>/NN, mirroring the tree, so
-# `COPY <out>/NN/ /opt/bedrock/` for each bucket reconstructs the whole tree.
+# `COPY <out>/NN/ /opt/<game>/` for each bucket reconstructs the whole tree.
 set -eu
 
 src=$1
 out=$2
-N=${3:-16}
+N=$3
+depth=${4:-2}
 
-# Resolved to absolute now, because the file loops below cd into <src> and would
+# Resolved to absolute now, because the loop below cds into <src> and would
 # otherwise write buckets into <src>/<out>.
 case $out in /*) ;; *) out=$PWD/$out ;; esac
 
@@ -30,7 +39,7 @@ while [ "$i" -lt "$N" ]; do
     i=$((i + 1))
 done
 
-# Hash the subtree name to a bucket. The top 8 hex of sha256 is plenty of spread
+# Hash the subtree path to a bucket. The top 8 hex of sha256 is plenty of spread
 # for N in the tens, and $(( 0x.. )) keeps it to one arithmetic expansion.
 bucket() {
     h=$(printf '%s' "$1" | sha256sum | cut -c1-8)
@@ -39,21 +48,19 @@ bucket() {
 
 cd "$src"
 
-# Top-level files bucket on their own name.
-for f in *; do
-    [ -f "$f" ] || continue
-    mv "$f" "$out/$(bucket "$f")/"
-done
+move() {  # $1 = a unit path like ./a/b — moved whole, keyed by its path
+    rel=${1#./}
+    dst="$out/$(bucket "$rel")/$(dirname "$rel")"
+    mkdir -p "$dst"
+    mv "$1" "$dst/"
+}
 
-# Everything under a directory buckets on its depth-2 subtree (top/second), so a
-# whole pack moves as a unit and deeper files inherit its bucket.
-for top in */; do
-    [ -d "$top" ] || continue
-    top=${top%/}
-    for child in "$top"/*; do
-        [ -e "$child" ] || continue
-        b=$(bucket "$child")
-        mkdir -p "$out/$b/$top"
-        mv "$child" "$out/$b/$top/"
-    done
+# The bucket units: every entry at exactly depth <depth> (a dir moves whole, its
+# deeper files inheriting its bucket; a file at that depth moves alone), plus any
+# file shallower than <depth>. Enumerate first, then move — so moving a unit does
+# not disturb the walk. (Game paths have no newlines.)
+units=$(find . -mindepth "$depth" -maxdepth "$depth"
+        [ "$depth" -gt 1 ] && find . -mindepth 1 -maxdepth "$((depth - 1))" -type f)
+printf '%s\n' "$units" | while IFS= read -r u; do
+    [ -n "$u" ] && [ -e "$u" ] && move "$u"
 done

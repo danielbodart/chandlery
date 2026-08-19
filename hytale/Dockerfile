@@ -43,7 +43,10 @@ COPY --chmod=0755 build/bucketize build/bake-layout hytale/fetch /usr/local/bin/
 RUN --mount=type=secret,id=hytale-token,required=true fetch /stage
 # The jar and its AOT cache change every build; give them their own top layer
 # above the ~60k unzipped assets, which stay put.
-RUN bake-layout /stage /buckets /bin-layer "${ASSET_BUCKETS}" "${SOURCE_DATE_EPOCH}" \
+# depth 4: the unzipped assets are lopsided and deep — Assets/Server/Prefabs and
+# Assets/Common/Music hold most of the 3.4 GB — so depth-2 would land it all in
+# ~2 giant buckets. depth-4 splits Prefabs/* etc across buckets.
+RUN bake-layout /stage /buckets /bin-layer "${ASSET_BUCKETS}" "${SOURCE_DATE_EPOCH}" 4 \
       Server/HytaleServer.jar Server/HytaleServer.aot.config
 
 # ---- runtime: base + Java + baked layers + adapter ----
