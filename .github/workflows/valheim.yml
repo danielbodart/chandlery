@@ -145,7 +145,7 @@ jobs:
             --build-arg STEAM_USERNAME="$STEAM_USERNAME" \
             --build-arg SOURCE_DATE_EPOCH=0 \
             --secret id=steam-token,src="$RUNNER_TEMP/steam-token" \
-            -t valheim:built valheim
+            -t valheim:built -f valheim/Dockerfile .
           rm -f "$RUNNER_TEMP/steam-token"
 
           echo "Running the built server to read the game version..."

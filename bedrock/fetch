@@ -1,0 +1,39 @@
+#!/bin/sh
+# Build-time: download the pinned Bedrock zip, verify it against the sha256 the
+# image records, and populate $1 (the staging tree) with the game — the binary
+# and the asset tree, minus build-time leftovers. The Dockerfile bakes whatever
+# this leaves behind; the runtime image carries none of the download machinery.
+#
+# A checksum mismatch aborts non-zero: the build would rather fail than bake bytes
+# that are not the version on the tag (PLAN 7.3).
+set -eu
+
+stage=$1
+: "${BEDROCK_VERSION:?BEDROCK_VERSION is not set}"
+url="${BEDROCK_URL:-https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-${BEDROCK_VERSION}.zip}"
+
+log() { printf '[bedrock/fetch] %s\n' "$*" >&2; }
+
+log "downloading Bedrock $BEDROCK_VERSION from $url"
+# The User-Agent matters: Mojang's Azure CDN kills the HTTP/2 stream for a UA
+# carrying spaces or parentheses (curl's default included); a plain token UA gets
+# a clean 200. (itzg/docker-minecraft-bedrock-server#458.) Retries cover 503s.
+curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --retry-max-time 300 \
+     -A chandlery/bedrock -o /tmp/bds.zip "$url"
+
+if [ -n "${BEDROCK_SHA256:-}" ]; then
+    log "verifying sha256"
+    echo "${BEDROCK_SHA256}  /tmp/bds.zip" | sha256sum -c -
+else
+    log "WARNING: no BEDROCK_SHA256 pinned; baking whatever the URL served"
+fi
+
+mkdir -p "$stage"
+unzip -q /tmp/bds.zip -d "$stage"
+rm -f /tmp/bds.zip
+
+# Build-time leftovers that cannot run a game: the static link library, and the
+# ~311 MB debug-symbols file older releases shipped.
+rm -f "$stage/libMinecraft.Server.Lib.a" "$stage/bedrock_server_debug_symbols.debug"
+
+test -x "$stage/bedrock_server" || { log "no bedrock_server in the downloaded zip"; exit 65; }

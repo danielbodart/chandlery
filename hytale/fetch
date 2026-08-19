@@ -1,0 +1,81 @@
+#!/bin/sh
+# Build-time: resolve the operator's entitled Hytale copy through the OAuth
+# signing proxy, download and verify it, and populate $1 (the staging tree) with
+# the server jar and the UNZIPPED asset directory. The Dockerfile bakes what this
+# leaves behind; none of the download machinery rides into the runtime image.
+#
+# The fetch needs a downloader access token, mounted as a build secret (default
+# /run/secrets/hytale-token); it is never baked. Flow, verified against the
+# official downloader's live traffic (PLAN 7.1):
+#   1. GET account-data.hytale.com/game-assets/version/<patchline>.json (Bearer)
+#        -> {"url": <signed R2 url>}
+#   2. GET <signed url>  ->  {"version","download_url","sha256"}
+#   3. GET account-data.hytale.com/game-assets/<download_url> (Bearer)
+#        -> {"url": <signed R2 url>}
+#   4. GET <signed url>  ->  the build zip; verify sha256.
+#
+# No `set -x` here: the token rides in a curl header, and xtrace would print it
+# into the build log. Milestones are logged explicitly instead.
+set -eu
+
+stage=$1
+: "${HYTALE_VERSION:?HYTALE_VERSION is not set}"
+: "${HYTALE_PATCHLINE:=release}"
+
+token=$(cat "${HYTALE_TOKEN_FILE:-/run/secrets/hytale-token}")
+api="${HYTALE_ACCOUNT_API:-https://account-data.hytale.com}"
+log() { printf '[hytale/fetch] %s\n' "$*" >&2; }
+
+# Ask the signing proxy for a signed URL to an object under game-assets/.
+signed_url() {  # $1 = object path
+    curl -fsS -A chandlery/hytale -H "authorization: Bearer $token" \
+         "$api/game-assets/$1" | jq -r '.url // empty'
+}
+
+log "resolving $HYTALE_PATCHLINE version"
+vsig=$(signed_url "version/${HYTALE_PATCHLINE}.json")
+[ -n "$vsig" ] || { log "no signed URL for the version manifest (token expired or unauthorised?)"; exit 65; }
+meta=$(curl -fsS "$vsig")
+
+got_version=$(printf '%s' "$meta" | jq -r '.version // empty')
+download_url=$(printf '%s' "$meta" | jq -r '.download_url // empty')
+manifest_sha=$(printf '%s' "$meta" | jq -r '.sha256 // empty')
+
+# Fail closed if the patchline has moved off the version this image pins: the tag
+# must never bake something else. CI rebuilds the image on a new version.
+if [ -n "$got_version" ] && [ "$got_version" != "$HYTALE_VERSION" ]; then
+    log "ERROR: $HYTALE_PATCHLINE is on $got_version, but this image pins $HYTALE_VERSION."
+    exit 65
+fi
+[ -n "$download_url" ] || { log "no download_url in the version manifest"; exit 65; }
+
+log "downloading build $HYTALE_VERSION ($download_url)"
+bsig=$(signed_url "$download_url")
+[ -n "$bsig" ] || { log "no signed URL for the build"; exit 65; }
+curl -fsSL -A chandlery/hytale --retry 5 --retry-all-errors --retry-max-time 3600 -o /tmp/hytale.zip "$bsig"
+
+# Prefer the sha256 baked into the image (a cryptographic pin, like Bedrock);
+# fall back to the manifest's own. A mismatch refuses to bake.
+want="${HYTALE_SHA256:-$manifest_sha}"
+if [ -n "$want" ] && [ "$want" != null ]; then
+    log "verifying sha256"
+    echo "$want  /tmp/hytale.zip" | sha256sum -c -
+else
+    log "WARNING: no sha256 to verify against"
+fi
+
+mkdir -p "$stage"
+unzip -q /tmp/hytale.zip -d "$stage"
+rm -f /tmp/hytale.zip
+find "$stage" -maxdepth 2 -name '*.jar' | grep -q . || { log "no server jar in the download"; exit 65; }
+
+# Assets.zip is a STORED (uncompressed) container of ~60k files, and the server
+# reads --assets as a directory (Options metavar DIR_OR_ZIP). Unzip it and bake
+# the tree: each asset then buckets and dedupes across versions, instead of one
+# 3.4 GB blob re-pulling wholesale on any change — at essentially no size cost,
+# since the zip stored without compression.
+if [ -f "$stage/Assets.zip" ]; then
+    log "unpacking Assets.zip to a directory"
+    unzip -q "$stage/Assets.zip" -d "$stage/Assets"
+    rm -f "$stage/Assets.zip"
+fi

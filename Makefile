@@ -61,7 +61,7 @@ bedrock: base
 	  --build-arg BEDROCK_VERSION=$(BEDROCK_VERSION) \
 	  --build-arg BEDROCK_SHA256=$(BEDROCK_SHA256) \
 	  --build-arg SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
-	  -t $(REGISTRY)/bedrock:$(BEDROCK_VERSION) -t $(REGISTRY)/bedrock:$(TAG) bedrock
+	  -t $(REGISTRY)/bedrock:$(BEDROCK_VERSION) -t $(REGISTRY)/bedrock:$(TAG) -f bedrock/Dockerfile .
 
 test-bedrock: bedrock
 	docker build --build-arg BASE=$(REGISTRY)/bedrock:$(TAG) \
@@ -76,7 +76,7 @@ valheim: base
 	  --build-arg STEAM_USERNAME=$(STEAM_USERNAME) \
 	  --build-arg SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
 	  $(if $(STEAM_TOKEN),--secret id=steam-token$(comma)src=$(STEAM_TOKEN),) \
-	  -t $(REGISTRY)/valheim:$(VALHEIM_VERSION) -t $(REGISTRY)/valheim:$(TAG) valheim
+	  -t $(REGISTRY)/valheim:$(VALHEIM_VERSION) -t $(REGISTRY)/valheim:$(TAG) -f valheim/Dockerfile .
 
 # The adapter — prepare checks, argument assembly, stop signal, health probe —
 # on a fake server, so it is testable without a 1.6 GB download.
@@ -100,7 +100,7 @@ hytale: base
 	  --build-arg HYTALE_SHA256=$(HYTALE_SHA256) \
 	  --build-arg SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) \
 	  $(if $(HYTALE_TOKEN),--secret id=hytale-token$(comma)src=$(HYTALE_TOKEN),) \
-	  -t $(REGISTRY)/hytale:$(HYTALE_VERSION) -t $(REGISTRY)/hytale:$(TAG) hytale
+	  -t $(REGISTRY)/hytale:$(HYTALE_VERSION) -t $(REGISTRY)/hytale:$(TAG) -f hytale/Dockerfile .
 
 # The adapter — prepare checks, argument assembly, the console stop — on a fake
 # server, so it is testable without a downloader token or the 3.3 GB download.

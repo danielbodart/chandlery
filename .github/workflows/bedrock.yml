@@ -120,7 +120,7 @@ jobs:
             --build-arg BEDROCK_VERSION="$VERSION" \
             --build-arg BEDROCK_SHA256="$SHA256" \
             --build-arg SOURCE_DATE_EPOCH=0 \
-            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" bedrock
+            -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" -f bedrock/Dockerfile .
           docker push "${IMAGE}:${VERSION}"
           docker push "${IMAGE}:latest"
 

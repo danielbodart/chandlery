@@ -118,7 +118,7 @@ jobs:
             --build-arg HYTALE_SHA256="$sha" \
             --build-arg SOURCE_DATE_EPOCH=0 \
             --secret id=hytale-token,src="$RUNNER_TEMP/hytale-token" \
-            -t "${IMAGE}:${version}" -t "${IMAGE}:latest" hytale
+            -t "${IMAGE}:${version}" -t "${IMAGE}:latest" -f hytale/Dockerfile .
           rm -f "$RUNNER_TEMP/hytale-token"
 
           docker push "${IMAGE}:${version}"

@@ -1,0 +1,41 @@
+#!/bin/sh
+# Build-time: turn a populated staging tree into the baked layer layout that the
+# Dockerfile then COPYs, one COPY per layer. This is the step every game shares,
+# so it lives here rather than inline in three Dockerfiles.
+#
+#   bake-layout <stage> <buckets-out> <bin-out> <N> <epoch> [binary-rel-path...]
+#
+# 1. Each binary path (relative to <stage>) that exists is moved into <bin-out>,
+#    keeping its relative path, so the Dockerfile can give it its own top layer —
+#    it changes every build while the assets around it do not. A listed path that
+#    is absent is skipped (the fetch script is what enforces the essential ones).
+# 2. Everything left in <stage> is distributed into <N> subtree-hash buckets
+#    (see bucketize), so an unchanged subtree bakes to a dedupe-able layer.
+# 3. Every mtime — files and dirs, in both trees — is normalised to <epoch>, so a
+#    byte-identical layer hashes the same across versions and the registry dedupes
+#    it. Without this, unzip/extract stamps each build's time and nothing dedupes.
+set -eu
+
+stage=$1
+buckets=$2
+binout=$3
+N=$4
+epoch=$5
+shift 5
+
+log() { printf '[bake-layout] %s\n' "$*" >&2; }
+
+mkdir -p "$binout"
+for rel in "$@"; do
+    if [ -e "$stage/$rel" ]; then
+        mkdir -p "$binout/$(dirname "$rel")"
+        mv "$stage/$rel" "$binout/$rel"
+    else
+        log "note: $rel is not present, leaving it to the buckets"
+    fi
+done
+
+bucketize "$stage" "$buckets" "$N"
+rm -rf "$stage"
+
+find "$buckets" "$binout" -exec touch --no-dereference -h -d "@${epoch}" {} +

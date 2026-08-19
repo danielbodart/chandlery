@@ -1,0 +1,8 @@
+# The game images build from the repository root (so build/ helpers are in
+# context). Keep the context small — none of this belongs in a build.
+.git
+**/*.log
+*.md
+LICENSE
+logo.png
+examples/

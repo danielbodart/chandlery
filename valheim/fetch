@@ -1,0 +1,73 @@
+#!/bin/sh
+# Build-time: fetch exactly the pinned Valheim depot manifest and a current
+# steamclient.so, into $1 (the staging tree). The Dockerfile bakes what this
+# leaves behind; none of the download machinery rides into the runtime image.
+#
+# Anonymous login cannot download this depot ("No subscription"), so it
+# authenticates with the operator's own licensed Steam account: the username in
+# STEAM_USERNAME, the DepotDownloader account.config token mounted as a build
+# secret (default /run/secrets/steam-token). Neither is baked.
+set -eu
+
+stage=$1
+: "${VALHEIM_APP_ID:?VALHEIM_APP_ID is not set}"
+: "${VALHEIM_DEPOT_ID:?VALHEIM_DEPOT_ID is not set}"
+: "${VALHEIM_MANIFEST_GID:?VALHEIM_MANIFEST_GID is not set}"
+: "${STEAM_USERNAME:?STEAM_USERNAME is not set}"
+: "${DEPOTDOWNLOADER_VERSION:?DEPOTDOWNLOADER_VERSION is not set}"
+: "${DEPOTDOWNLOADER_SHA256:?DEPOTDOWNLOADER_SHA256 is not set}"
+
+token="${STEAM_TOKEN_FILE:-/run/secrets/steam-token}"
+log() { printf '[valheim/fetch] %s\n' "$*" >&2; }
+
+# DepotDownloader, pinned by version + sha256 (MIT tooling, not the game).
+log "installing DepotDownloader $DEPOTDOWNLOADER_VERSION"
+curl -fsSL -o /tmp/dd.zip \
+  "https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_${DEPOTDOWNLOADER_VERSION}/DepotDownloader-linux-x64.zip"
+echo "${DEPOTDOWNLOADER_SHA256}  /tmp/dd.zip" | sha256sum -c -
+mkdir -p /opt/depotdownloader
+unzip -q /tmp/dd.zip -d /opt/depotdownloader
+chmod +x /opt/depotdownloader/DepotDownloader
+rm -f /tmp/dd.zip
+DD=/opt/depotdownloader/DepotDownloader
+
+# DepotDownloader keeps its token in .NET IsolatedStorage under $HOME, at a path
+# derived from the binary — so we cannot hardcode it. A harmless anonymous run
+# creates the store; we drop the operator's token into the AssemFiles dir it
+# makes, then the authenticated run reuses it with no 2-factor prompt.
+export HOME=/tmp/dd-home
+mkdir -p "$HOME"
+"$DD" -app "$VALHEIM_APP_ID" -manifest-only >/dev/null 2>&1 || true
+ass=$(find "$HOME" -type d -name AssemFiles | head -1)
+[ -n "$ass" ] || { log "DepotDownloader did not initialise its credential store"; exit 70; }
+cp "$token" "$ass/account.config"
+
+log "downloading depot $VALHEIM_DEPOT_ID manifest $VALHEIM_MANIFEST_GID"
+"$DD" -app "$VALHEIM_APP_ID" -depot "$VALHEIM_DEPOT_ID" -manifest "$VALHEIM_MANIFEST_GID" \
+      -username "$STEAM_USERNAME" -remember-password -dir /dl \
+  || { log "DepotDownloader failed — token expired, or the account lacks the depot license"; exit 65; }
+
+# Relocate the server up into the staging root, dropping DepotDownloader's
+# .DepotDownloader bookkeeping and its credential store.
+found=$(find /dl -type f -name valheim_server.x86_64 | head -1)
+[ -n "$found" ] || { log "no valheim_server.x86_64 in the download"; exit 65; }
+mkdir -p "$stage"
+(cd "$(dirname "$found")" && tar cf - --exclude='.DepotDownloader' .) | (cd "$stage" && tar xf -)
+chmod +x "$stage/valheim_server.x86_64"
+rm -rf /dl "$HOME"
+
+# A current steamclient.so from SteamCMD, baked next to the server. The depot's
+# own is from 2022 and the server's Steam init rejects it ("Missing interface
+# adapter for SteamGameServer015"); SteamCMD self-updates to a current one. It
+# must be the linux64 library — the server is 64-bit, and a bare `find | head`
+# can pick linux32 first, which then fails init with "Steam is not initialized".
+log "fetching a current steamclient.so via SteamCMD"
+mkdir -p /opt/steamcmd
+curl -fsSL --http1.1 --retry 5 --retry-all-errors \
+     https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
+  | tar -xz -C /opt/steamcmd
+/opt/steamcmd/steamcmd.sh +quit >/dev/null 2>&1 || true
+sc=$(find /opt/steamcmd -path '*/linux64/*' -name steamclient.so | head -1)
+[ -n "$sc" ] || sc=$(find /opt/steamcmd -name steamclient.so | head -1)
+[ -n "$sc" ] || { log "SteamCMD produced no steamclient.so"; exit 70; }
+cp "$sc" "$stage/steamclient.so"
