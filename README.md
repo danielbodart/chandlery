@@ -3,11 +3,11 @@
 
 # Chandlery
 
-**Clean-room, Docker-native game-server images where the image tag *is* the game version.** The image pins the exact version — by URL and checksum, by Steam depot manifest, or by version and patchline — and refuses to run anything else, so `chandlery/bedrock:1.26.44.3` is exactly Bedrock 1.26.44.3, verified. When a game releases, CI rebuilds the image; graceful stop saves the world before exit; a real health check gates it.
+**Clean-room, Docker-native game-server images where the image tag *is* the game version.** The image pins the exact version — and refuses to run anything else, so `chandlery/bedrock:1.26.44.3` is exactly Bedrock 1.26.44.3, verified. When a game releases, CI rebuilds the image; graceful stop saves the world before exit; a real health check gates it.
 
 > A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game.
 
-Status: **all three games — Minecraft Bedrock, Valheim, Hytale — are built, proven on a real host, and publishing to GHCR** (`chandlery/bedrock:1.26.44.3`, `chandlery/valheim:0.221.12`, `chandlery/hytale:0.5.9`). The images *pin-and-verify* rather than baking the game in: each records exactly which version and fetches it from upstream on first start, verified, onto a `/cache` volume (see [PLAN.md §7.3](./PLAN.md)). Release CI rebuilds each on upstream release. Remaining: migrating the homelab off LinuxGSM.
+Status: **all three games — Minecraft Bedrock, Valheim, Hytale — are built, proven on a real host, and publishing to GHCR** The images *pin-and-verify* rather than baking the game in: each records exactly which version and fetches it from upstream on first start, verified, onto a `/cache` volume. Release CI rebuilds each on upstream release. 
 
 ## Running one
 
@@ -16,7 +16,7 @@ $ docker run -d --name bedrock -p 19132:19132/udp -v bedrock-data:/data \
     --stop-timeout 300 ghcr.io/danielbodart/chandlery/bedrock:latest
 ```
 
-There is a fuller [example compose file](./examples/compose.yaml) with both games, sensible stop grace periods, and the IPv6 network Bedrock insists on.
+There is a fuller [example compose file](./examples/compose.yaml) with both games, sensible stop grace periods
 
 | | Bedrock | Valheim | Hytale |
 | --- | --- | --- | --- |
@@ -31,8 +31,7 @@ There is a fuller [example compose file](./examples/compose.yaml) with both game
 A few things worth knowing before the first run:
 
 - **`/data` on a bind mount must be yours.** A named volume just works. A bind mount arrives owned by whoever owns the host directory — `chown 1000:1000` it, or start the container once as root and it will adopt it. Either way it says so rather than failing quietly.
-- **Bedrock wants a kernel with IPv6 support** — not IPv6 connectivity. An IPv4-only host is fine. It only matters if IPv6 is disabled outright (`ipv6.disable=1`), where BDS exits complaining its ports are in use when they are not; the image warns about that case.
-- **Valheim and Hytale need your own credential** to fetch, because a public image cannot carry the game bytes. Valheim: a Steam account that owns Valheim, its DepotDownloader token mounted as a secret (`STEAM_USERNAME` + `/run/secrets/steam-login`). Hytale: a downloader OAuth token. Bedrock needs nothing. See the [example compose](./examples/compose.yaml) and [PLAN.md §7.3](./PLAN.md).
+
 
 Talk to a running server with `docker exec chandlery-bedrock chandlery-console say hello`.
 
@@ -40,9 +39,7 @@ Talk to a running server with `docker exec chandlery-bedrock chandlery-console s
 
 Because otherwise the image tag tells you nothing. Existing images take the version as a runtime environment variable, so the same tag runs different software on different days, and "roll back" is not an operation you can perform.
 
-Chandlery pins the version — and its checksum — in the image at build time, and the container fetches exactly that from upstream on first start or refuses to run. So `:1.26.44.3` is a fact rather than a hope, and rolling back is an ordinary Docker operation.
-
-The images deliberately carry **no game content**: Mojang's EULA and the Steam Subscriber Agreement both prohibit redistributing it, which is why every other image downloads at runtime too. The difference is that ours still knows which version it is.
+Chandlery pins the version — and its checksum — in the image at build time. So `:1.26.44.3` is a fact rather than a hope, and rolling back is an ordinary Docker operation.
 
 The rest follows from wanting the lifecycle to be plain Docker: `tini` as PID 1, a stop that hands the server its own in-band save-and-quit and *waits* (Bedrock does not save on a bare `SIGTERM`), a health check that proves the server is answering players rather than merely holding a port, and `restart` for crashes. No supervisor, no tmux, no monitor cron.
 
