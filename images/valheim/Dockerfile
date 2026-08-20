@@ -2,9 +2,9 @@
 #
 # Valheim Dedicated Server — baked, layered by churn.
 #
-# Built from the REPOSITORY ROOT (`docker build -f valheim/Dockerfile .`) so the
+# Built from the REPOSITORY ROOT (`docker build -f images/valheim/Dockerfile .`) so the
 # shared build/ helpers are in context. The imperative work lives in named
-# scripts: valheim/fetch authenticates with the operator's licensed Steam account
+# scripts: images/valheim/fetch authenticates with the operator's licensed Steam account
 # and downloads exactly the pinned depot manifest (plus a current steamclient.so);
 # build/bake-layout buckets the tree by subtree hash and normalises mtimes. So an
 # unchanged subtree bakes to a byte-identical layer the registry dedupes across
@@ -26,7 +26,7 @@ ARG DEPOTDOWNLOADER_SHA256=a999dec66b4850fc961bd50366696d23c2d0fad7b18790e6a5647
 
 FROM golang:1.24-bookworm AS probe
 WORKDIR /src
-COPY valheim/probe/go.mod valheim/probe/main.go valheim/probe/main_test.go ./
+COPY images/valheim/probe/go.mod images/valheim/probe/main.go images/valheim/probe/main_test.go ./
 # The health check decides whether a live server gets replaced, so its tests run
 # as part of building it.
 RUN CGO_ENABLED=0 go test ./... && CGO_ENABLED=0 go build -trimpath -o /chandlery-a2s .
@@ -49,7 +49,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl unzip libicu72 lib32gcc-s1 \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --chmod=0755 build/bucketize build/bake-layout valheim/fetch /usr/local/bin/
+COPY --chmod=0755 build/bucketize build/bake-layout images/valheim/fetch /usr/local/bin/
 RUN --mount=type=secret,id=steam-token,required=true fetch /stage
 # No binary split (see header): the whole tree buckets by subtree, depth 2.
 RUN bake-layout /stage /buckets /bin-layer "${ASSET_BUCKETS}" "${SOURCE_DATE_EPOCH}" 2
@@ -62,7 +62,7 @@ ARG VALHEIM_BUILD_ID
 ARG VALHEIM_MANIFEST_GID
 ARG VALHEIM_APP_ID=896660
 ARG VALHEIM_DEPOT_ID=896661
-# Our packaging revision (the repo's git SHA) — see bedrock/Dockerfile.
+# Our packaging revision (the repo's git SHA) — see images/bedrock/Dockerfile.
 ARG CHANDLERY_REVISION=
 
 USER root
@@ -108,11 +108,11 @@ COPY --from=fetch --chown=chandlery:chandlery /buckets/28/ /opt/valheim/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/29/ /opt/valheim/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/30/ /opt/valheim/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/31/ /opt/valheim/
-COPY --chmod=0755 valheim/run           /usr/local/bin/valheim-server
-COPY --chmod=0755 valheim/prepare       /usr/local/lib/chandlery/prepare
-COPY --chmod=0755 valheim/stop-hook     /usr/local/lib/chandlery/stop
-COPY --chmod=0755 valheim/health        /usr/local/lib/chandlery/health
-COPY --chmod=0755 valheim/game-version  /usr/local/lib/chandlery/game-version
+COPY --chmod=0755 images/valheim/run           /usr/local/bin/valheim-server
+COPY --chmod=0755 images/valheim/prepare       /usr/local/lib/chandlery/prepare
+COPY --chmod=0755 images/valheim/stop-hook     /usr/local/lib/chandlery/stop
+COPY --chmod=0755 images/valheim/health        /usr/local/lib/chandlery/health
+COPY --chmod=0755 images/valheim/game-version  /usr/local/lib/chandlery/game-version
 
 ENV VALHEIM_VERSION=${VALHEIM_VERSION} \
     VALHEIM_BUILD_ID=${VALHEIM_BUILD_ID} \

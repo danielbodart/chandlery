@@ -13,7 +13,7 @@ USER root
 
 ARG HYTALE_VERSION=0.0.0-fake
 # Mirror the real baked layout: Server/HytaleServer.jar and Assets.zip next to
-# it, which is what hytale/run locates and points --assets at.
+# it, which is what images/hytale/run locates and points --assets at.
 RUN mkdir -p /opt/hytale/Server \
  && : > /opt/hytale/Server/HytaleServer.jar \
  && : > /opt/hytale/Assets.zip \
@@ -23,9 +23,9 @@ RUN mkdir -p /opt/hytale/Server \
 # script execs. Kept on PATH under /usr/local/bin.
 COPY --chmod=0755 test/fixtures/fake-hytale/java /usr/local/bin/java
 
-COPY --chmod=0755 hytale/run       /usr/local/bin/hytale-server
-COPY --chmod=0755 hytale/prepare   /usr/local/lib/chandlery/prepare
-COPY --chmod=0755 hytale/stop-hook /usr/local/lib/chandlery/stop
+COPY --chmod=0755 images/hytale/run       /usr/local/bin/hytale-server
+COPY --chmod=0755 images/hytale/prepare   /usr/local/lib/chandlery/prepare
+COPY --chmod=0755 images/hytale/stop-hook /usr/local/lib/chandlery/stop
 
 ENV HYTALE_VERSION=${HYTALE_VERSION} \
     HYTALE_PATCHLINE=release \

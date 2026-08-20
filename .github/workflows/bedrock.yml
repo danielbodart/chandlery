@@ -21,9 +21,9 @@ on:
   push:
     branches: [master]
     paths:
-      - 'base/**'
+      - 'images/base/**'
       - 'build/**'
-      - 'bedrock/**'
+      - 'images/bedrock/**'
       - '.github/workflows/bedrock.yml'
 
 concurrency:
@@ -52,7 +52,7 @@ jobs:
         name: Ask Mojang what it currently ships
         run: |
           version="${{ inputs.version }}"
-          [ -n "$version" ] || version="$(./bedrock/upstream-version)"
+          [ -n "$version" ] || version="$(./images/bedrock/upstream-version)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Upstream Bedrock: $version"
 
@@ -115,14 +115,14 @@ jobs:
       # Plain daemon build: the game's `FROM chandlery/base:ci` resolves the base
       # built a line earlier in the same daemon — no registry pull, no shared
       # store. SOURCE_DATE_EPOCH is fixed so unchanged asset buckets dedupe
-      # across versions (bedrock/Dockerfile).
+      # across versions (images/bedrock/Dockerfile).
       - name: Build and push Bedrock
         env:
           DOCKER_BUILDKIT: "1"
           VERSION: ${{ needs.resolve.outputs.version }}
           SHA256: ${{ needs.resolve.outputs.sha256 }}
         run: |
-          docker build -t chandlery/base:ci base
+          docker build -t chandlery/base:ci images/base
           rev="${GITHUB_SHA::7}"
           # BDS is x86-64 only; there is no ARM server build to fall back to.
           # Three tags: the moving game version, the immutable <version>-<rev>,
@@ -135,7 +135,7 @@ jobs:
             --build-arg CHANDLERY_REVISION="$GITHUB_SHA" \
             -t "${IMAGE}:${VERSION}" \
             -t "${IMAGE}:${VERSION}-${rev}" \
-            -t "${IMAGE}:latest" -f bedrock/Dockerfile .
+            -t "${IMAGE}:latest" -f images/bedrock/Dockerfile .
           docker push "${IMAGE}:${VERSION}"
           docker push "${IMAGE}:${VERSION}-${rev}"
           docker push "${IMAGE}:latest"

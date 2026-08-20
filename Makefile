@@ -6,7 +6,7 @@ REGISTRY ?= chandlery
 TAG      ?= test
 
 # The fixed mtime baked onto every game file, so an unchanged asset tree hashes
-# to the same layer across versions and the registry dedupes it (bedrock/Dockerfile).
+# to the same layer across versions and the registry dedupes it (images/bedrock/Dockerfile).
 # A constant, not $(shell date): a build epoch that moved every run would defeat it.
 SOURCE_DATE_EPOCH ?= 0
 
@@ -32,13 +32,13 @@ STEAM_TOKEN    ?=
 HYTALE_TOKEN   ?=
 
 # Default to whatever upstream ships right now. Pass BEDROCK_VERSION to pin.
-BEDROCK_VERSION      ?= $(shell ./bedrock/upstream-version)
-VALHEIM_BUILD_ID     ?= $(shell ./valheim/upstream-version)
+BEDROCK_VERSION      ?= $(shell ./images/bedrock/upstream-version)
+VALHEIM_BUILD_ID     ?= $(shell ./images/valheim/upstream-version)
 # The manifest gid is the content address the Valheim image actually pins; the
 # build id rides along as a label (PLAN 7.3).
-VALHEIM_MANIFEST_GID ?= $(shell ./valheim/upstream-version --gid)
+VALHEIM_MANIFEST_GID ?= $(shell ./images/valheim/upstream-version --gid)
 # The Valheim tag is the game version, which is only knowable by downloading and
-# booting the server (valheim/game-version), so it has no cheap default — CI
+# booting the server (images/valheim/game-version), so it has no cheap default — CI
 # resolves it, and local builds pass it or take this placeholder.
 VALHEIM_VERSION      ?= dev
 # Hytale's version manifest is authenticated, so there is no unattended
@@ -60,7 +60,7 @@ help:
 	@echo "make clean       remove the images these targets build"
 
 base:
-	docker build -t $(REGISTRY)/base:$(TAG) base
+	docker build -t $(REGISTRY)/base:$(TAG) images/base
 
 bedrock: base
 	docker build $(BUILD_SECRETS) --build-arg BASE=$(REGISTRY)/base:$(TAG) \
@@ -70,7 +70,7 @@ bedrock: base
 	  --build-arg CHANDLERY_REVISION=$(CHANDLERY_REVISION) \
 	  -t $(REGISTRY)/bedrock:$(BEDROCK_VERSION) \
 	  -t $(REGISTRY)/bedrock:$(BEDROCK_VERSION)-$(CHANDLERY_REVISION) \
-	  -t $(REGISTRY)/bedrock:$(TAG) -f bedrock/Dockerfile .
+	  -t $(REGISTRY)/bedrock:$(TAG) -f images/bedrock/Dockerfile .
 
 test-bedrock: bedrock
 	docker build --build-arg BASE=$(REGISTRY)/bedrock:$(TAG) \
@@ -88,7 +88,7 @@ valheim: base
 	  $(if $(STEAM_TOKEN),--secret id=steam-token$(comma)src=$(STEAM_TOKEN),) \
 	  -t $(REGISTRY)/valheim:$(VALHEIM_VERSION) \
 	  -t $(REGISTRY)/valheim:$(VALHEIM_VERSION)-$(CHANDLERY_REVISION) \
-	  -t $(REGISTRY)/valheim:$(TAG) -f valheim/Dockerfile .
+	  -t $(REGISTRY)/valheim:$(TAG) -f images/valheim/Dockerfile .
 
 # The adapter — prepare checks, argument assembly, stop signal, health probe —
 # on a fake server, so it is testable without a 1.6 GB download.
@@ -115,7 +115,7 @@ hytale: base
 	  $(if $(HYTALE_TOKEN),--secret id=hytale-token$(comma)src=$(HYTALE_TOKEN),) \
 	  -t $(REGISTRY)/hytale:$(HYTALE_VERSION) \
 	  -t $(REGISTRY)/hytale:$(HYTALE_VERSION)-$(CHANDLERY_REVISION) \
-	  -t $(REGISTRY)/hytale:$(TAG) -f hytale/Dockerfile .
+	  -t $(REGISTRY)/hytale:$(TAG) -f images/hytale/Dockerfile .
 
 # The adapter — prepare checks, argument assembly, the console stop — on a fake
 # server, so it is testable without a downloader token or the 3.3 GB download.

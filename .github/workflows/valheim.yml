@@ -26,9 +26,9 @@ on:
   push:
     branches: [master]
     paths:
-      - 'base/**'
+      - 'images/base/**'
       - 'build/**'
-      - 'valheim/**'
+      - 'images/valheim/**'
       - '.github/workflows/valheim.yml'
 
 concurrency:
@@ -59,12 +59,12 @@ jobs:
           BUILD_ID_INPUT: ${{ inputs.build_id }}
         run: |
           build_id="$BUILD_ID_INPUT"
-          [ -n "$build_id" ] || build_id="$(./valheim/upstream-version)"
+          [ -n "$build_id" ] || build_id="$(./images/valheim/upstream-version)"
           echo "build_id=$build_id" >> "$GITHUB_OUTPUT"
           echo "Upstream Valheim build: $build_id"
           # The gid is only ever the *current* one here, so record it on every
           # build or an old image can never be recreated (PLAN 7.3).
-          manifest_gid="$(./valheim/upstream-version --gid)"
+          manifest_gid="$(./images/valheim/upstream-version --gid)"
           echo "manifest_gid=$manifest_gid" >> "$GITHUB_OUTPUT"
           echo "Manifest gid: $manifest_gid"
 
@@ -138,7 +138,7 @@ jobs:
           umask 077
           printf '%s' "$STEAM_LOGIN_TOKEN" | base64 -d > "$RUNNER_TEMP/steam-token"
 
-          docker build -t chandlery/base:ci base
+          docker build -t chandlery/base:ci images/base
           # The server is an x86-64 build; there is no ARM one. VALHEIM_VERSION is
           # left at its default — we do not know it yet, and it is not a pin.
           docker build \
@@ -149,7 +149,7 @@ jobs:
             --build-arg SOURCE_DATE_EPOCH=0 \
             --build-arg CHANDLERY_REVISION="$GITHUB_SHA" \
             --secret id=steam-token,src="$RUNNER_TEMP/steam-token" \
-            -t valheim:built -f valheim/Dockerfile .
+            -t valheim:built -f images/valheim/Dockerfile .
           rm -f "$RUNNER_TEMP/steam-token"
 
           echo "Running the built server to read the game version..."

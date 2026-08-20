@@ -1,7 +1,7 @@
 #!/bin/sh
 # Bedrock image, baked. "image = version" is now literal: the server the tag
 # names is in the image, split into a stable asset layer and the volatile
-# bedrock_server layer (bedrock/Dockerfile). These checks prove the layout the
+# bedrock_server layer (images/bedrock/Dockerfile). These checks prove the layout the
 # image bakes and the adapter that runs it — no cache volume, no first-start
 # fetch, no network.
 set -eu

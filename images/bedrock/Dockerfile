@@ -3,8 +3,8 @@
 # Minecraft Bedrock Dedicated Server — baked, layered by churn.
 #
 # Built from the REPOSITORY ROOT so the shared build helpers in build/ are in
-# context: `docker build -f bedrock/Dockerfile .`. The imperative work lives in
-# named scripts (bedrock/fetch downloads+verifies; build/bake-layout splits the
+# context: `docker build -f images/bedrock/Dockerfile .`. The imperative work lives in
+# named scripts (images/bedrock/fetch downloads+verifies; build/bake-layout splits the
 # binary out, buckets the assets and normalises mtimes; build/bucketize is the
 # bucketer) so this file stays structure, not shell.
 #
@@ -43,7 +43,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl unzip \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --chmod=0755 build/bucketize build/bake-layout bedrock/fetch /usr/local/bin/
+COPY --chmod=0755 build/bucketize build/bake-layout images/bedrock/fetch /usr/local/bin/
 RUN fetch /stage
 # depth 2: Bedrock's churn clusters at depth-2 (per-pack, version-named dirs).
 RUN bake-layout /stage /buckets /bin-layer "${ASSET_BUCKETS}" "${SOURCE_DATE_EPOCH}" 2 bedrock_server
@@ -95,10 +95,10 @@ COPY --from=fetch --chown=chandlery:chandlery /buckets/28/ /opt/bedrock/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/29/ /opt/bedrock/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/30/ /opt/bedrock/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/31/ /opt/bedrock/
-COPY --chmod=0755 bedrock/prepare   /usr/local/lib/chandlery/prepare
-COPY --chmod=0755 bedrock/stop-hook /usr/local/lib/chandlery/stop
-COPY --chmod=0755 bedrock/health    /usr/local/lib/chandlery/health
-COPY --chmod=0755 bedrock/run       /usr/local/bin/bedrock-server
+COPY --chmod=0755 images/bedrock/prepare   /usr/local/lib/chandlery/prepare
+COPY --chmod=0755 images/bedrock/stop-hook /usr/local/lib/chandlery/stop
+COPY --chmod=0755 images/bedrock/health    /usr/local/lib/chandlery/health
+COPY --chmod=0755 images/bedrock/run       /usr/local/bin/bedrock-server
 # Binary last: the top layer, and the whole per-release delta.
 COPY --from=fetch --chown=chandlery:chandlery /bin-layer/bedrock_server /opt/bedrock/bedrock_server
 

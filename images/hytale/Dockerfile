@@ -2,9 +2,9 @@
 #
 # Hytale Dedicated Server — baked, layered by churn.
 #
-# Built from the REPOSITORY ROOT (`docker build -f hytale/Dockerfile .`) so the
+# Built from the REPOSITORY ROOT (`docker build -f images/hytale/Dockerfile .`) so the
 # shared build/ helpers are in context. The imperative work lives in named
-# scripts: hytale/fetch resolves the entitled copy through the OAuth signing proxy
+# scripts: images/hytale/fetch resolves the entitled copy through the OAuth signing proxy
 # (PLAN 7.1), verifies it, and unzips it — including Assets.zip, which is STORED
 # (uncompressed) and which the server reads as a directory (--assets DIR_OR_ZIP),
 # so unpacking it costs ~no size but lets its ~60k files bucket and dedupe.
@@ -39,7 +39,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl unzip jq \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --chmod=0755 build/bucketize build/bake-layout hytale/fetch /usr/local/bin/
+COPY --chmod=0755 build/bucketize build/bake-layout images/hytale/fetch /usr/local/bin/
 RUN --mount=type=secret,id=hytale-token,required=true fetch /stage
 # The jar and its AOT cache change every build; give them their own top layer
 # above the ~60k unzipped assets, which stay put.
@@ -55,7 +55,7 @@ FROM ${BASE}
 ARG HYTALE_VERSION
 ARG HYTALE_PATCHLINE=release
 ARG HYTALE_SHA256=
-# Our packaging revision (the repo's git SHA) — see bedrock/Dockerfile.
+# Our packaging revision (the repo's git SHA) — see images/bedrock/Dockerfile.
 ARG CHANDLERY_REVISION=
 
 USER root
@@ -98,9 +98,9 @@ COPY --from=fetch --chown=chandlery:chandlery /buckets/28/ /opt/hytale/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/29/ /opt/hytale/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/30/ /opt/hytale/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/31/ /opt/hytale/
-COPY --chmod=0755 hytale/prepare   /usr/local/lib/chandlery/prepare
-COPY --chmod=0755 hytale/stop-hook /usr/local/lib/chandlery/stop
-COPY --chmod=0755 hytale/run       /usr/local/bin/hytale-server
+COPY --chmod=0755 images/hytale/prepare   /usr/local/lib/chandlery/prepare
+COPY --chmod=0755 images/hytale/stop-hook /usr/local/lib/chandlery/stop
+COPY --chmod=0755 images/hytale/run       /usr/local/bin/hytale-server
 # The server code last: the top layer, the per-build delta (jar + AOT cache).
 COPY --from=fetch --chown=chandlery:chandlery /bin-layer/Server/ /opt/hytale/Server/
 

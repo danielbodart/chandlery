@@ -24,9 +24,9 @@ on:
   push:
     branches: [master]
     paths:
-      - 'base/**'
+      - 'images/base/**'
       - 'build/**'
-      - 'hytale/**'
+      - 'images/hytale/**'
       - '.github/workflows/hytale.yml'
 
 # Never two at once: the refresh-token rotation is a read-modify-write on one
@@ -97,8 +97,8 @@ jobs:
           export HYTALE_ACCESS_TOKEN="$access"
 
           version="$VERSION_INPUT"
-          [ -n "$version" ] || version="$(./hytale/upstream-version)"
-          sha="$(./hytale/upstream-version --sha256)"
+          [ -n "$version" ] || version="$(./images/hytale/upstream-version)"
+          sha="$(./images/hytale/upstream-version --sha256)"
           echo "Hytale $HYTALE_PATCHLINE is on $version (sha256 $sha)"
 
           # The immutable tag is <game-version>-<our-revision>; it exists only if
@@ -116,7 +116,7 @@ jobs:
           # baked, never on a command line.
           printf '%s' "$access" > "$RUNNER_TEMP/hytale-token"
 
-          docker build -t chandlery/base:ci base
+          docker build -t chandlery/base:ci images/base
           docker build \
             --build-arg BASE=chandlery/base:ci \
             --build-arg HYTALE_VERSION="$version" \
@@ -127,7 +127,7 @@ jobs:
             --secret id=hytale-token,src="$RUNNER_TEMP/hytale-token" \
             -t "${IMAGE}:${version}" \
             -t "${IMAGE}:${version}-${rev}" \
-            -t "${IMAGE}:latest" -f hytale/Dockerfile .
+            -t "${IMAGE}:latest" -f images/hytale/Dockerfile .
           rm -f "$RUNNER_TEMP/hytale-token"
 
           docker push "${IMAGE}:${version}"

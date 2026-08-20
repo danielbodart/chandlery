@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 go build -trimpath -o /fake-valheim .
 
 FROM golang:1.24-alpine AS probe
 WORKDIR /src
-COPY valheim/probe/go.mod valheim/probe/main.go ./
+COPY images/valheim/probe/go.mod images/valheim/probe/main.go ./
 RUN CGO_ENABLED=0 go build -trimpath -o /chandlery-a2s .
 
 FROM ${BASE}
@@ -28,10 +28,10 @@ COPY --from=build --chown=chandlery:chandlery /fake-valheim /opt/valheim/valheim
 RUN : > /opt/valheim/steamclient.so && chown -R chandlery:chandlery /opt/valheim
 
 COPY --from=probe /chandlery-a2s /usr/local/bin/chandlery-a2s
-COPY --chmod=0755 valheim/run       /usr/local/bin/valheim-server
-COPY --chmod=0755 valheim/prepare   /usr/local/lib/chandlery/prepare
-COPY --chmod=0755 valheim/stop-hook /usr/local/lib/chandlery/stop
-COPY --chmod=0755 valheim/health    /usr/local/lib/chandlery/health
+COPY --chmod=0755 images/valheim/run       /usr/local/bin/valheim-server
+COPY --chmod=0755 images/valheim/prepare   /usr/local/lib/chandlery/prepare
+COPY --chmod=0755 images/valheim/stop-hook /usr/local/lib/chandlery/stop
+COPY --chmod=0755 images/valheim/health    /usr/local/lib/chandlery/health
 
 # The pin the adapter reads. No real bytes stand behind this gid; the baked fake
 # above is what run locates.
