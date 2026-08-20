@@ -127,6 +127,7 @@ LABEL org.opencontainers.image.title="Valheim Dedicated Server" \
       org.opencontainers.image.version="${VALHEIM_VERSION}" \
       org.opencontainers.image.revision="${CHANDLERY_REVISION}" \
       org.opencontainers.image.source="https://github.com/danielbodart/chandlery" \
+      org.opencontainers.image.description="Valheim dedicated server, image=version. Set VALHEIM_PASSWORD; tune -name/-world/-port/-public and extra flags via compose command:. Docs: https://github.com/danielbodart/chandlery/tree/master/images/valheim#readme" \
       org.opencontainers.image.licenses="Apache-2.0" \
       dev.chandlery.valheim.build-id="${VALHEIM_BUILD_ID}" \
       dev.chandlery.valheim.manifest-gid="${VALHEIM_MANIFEST_GID}"
@@ -138,4 +139,9 @@ EXPOSE 2456/udp 2457/udp
 HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
     CMD ["/usr/local/lib/chandlery/health"]
 
-CMD ["/usr/local/bin/valheim-server"]
+# The server has no config file — its whole configuration is arguments — so the
+# defaults live here in CMD, where compose `command:` can override them. The
+# password is NOT here: it is a secret, injected from VALHEIM_PASSWORD by the
+# adapter. -savedir, -nographics and -batchmode are non-negotiable and the
+# adapter sets those itself.
+CMD ["/usr/local/bin/valheim-server", "-name", "Chandlery", "-world", "Dedicated", "-port", "2456", "-public", "1"]

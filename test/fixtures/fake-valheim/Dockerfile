@@ -42,4 +42,7 @@ ENV VALHEIM_MANIFEST_GID=0000000000000000000 \
 
 USER chandlery
 WORKDIR /data
-CMD ["/usr/local/bin/valheim-server"]
+# Mirror the real image's CMD so the tests exercise the default-args path; a test
+# that passes its own arguments after the image overrides these, as compose
+# `command:` would.
+CMD ["/usr/local/bin/valheim-server", "-name", "Chandlery", "-world", "Dedicated", "-port", "2456", "-public", "1"]

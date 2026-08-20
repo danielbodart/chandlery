@@ -16,8 +16,11 @@
 # minted+rotated by tools/hytale-token); the image holds no credential, and the
 # pin stays cryptographic (sha256-verified against the manifest, or HYTALE_SHA256).
 #
-# Running the server is still token passthrough: HYTALE_SERVER_SESSION_TOKEN and
-# friends are injected by the deployer (or HYTALE_AUTH_MODE=offline). None baked.
+# Running the server is still token passthrough: the server reads its own
+# HYTALE_SERVER_SESSION_TOKEN / HYTALE_SERVER_IDENTITY_TOKEN from the environment
+# (its variables, not ours). None baked. Any server flag — including
+# `--auth-mode offline` — is passed natively via the container's arguments
+# (compose `command:`); there is no chandlery env re-encoding.
 ARG BASE=chandlery/base:test
 ARG FETCH_BASE=debian:bookworm-slim
 # Pinned: a floating 25-jre would drift the JRE under a tag meant to mean one
@@ -119,6 +122,7 @@ LABEL org.opencontainers.image.title="Hytale Dedicated Server" \
       org.opencontainers.image.version="${HYTALE_VERSION}" \
       org.opencontainers.image.revision="${CHANDLERY_REVISION}" \
       org.opencontainers.image.source="https://github.com/danielbodart/chandlery" \
+      org.opencontainers.image.description="Hytale dedicated server, image=version. Config in /data/config.json; authenticate with /auth login on the console; pass extra flags via compose command:. Docs: https://github.com/danielbodart/chandlery/tree/master/images/hytale#readme" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 # QUIC over UDP, 5520 by default. No HEALTHCHECK: no in-box protocol probe

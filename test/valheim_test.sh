@@ -14,26 +14,17 @@ PASSWORD=chandlery
 cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 
-run_fake() {
+run_fake() {  # docker options go before the image
     cleanup
     docker run -d --name "$CONTAINER" -e VALHEIM_PASSWORD="$PASSWORD" "$@" "$FAKE" >/dev/null
 }
 
+run_cmd() {  # arguments go after the image, the way compose `command:` passes them
+    cleanup
+    docker run -d --name "$CONTAINER" -e VALHEIM_PASSWORD="$PASSWORD" "$FAKE" "$@" >/dev/null
+}
+
 echo "valheim adapter"
-
-it "refuses to start without a password, and says so"
-# Valheim itself exits during startup with nothing useful in the log.
-out=$(docker run --rm "$FAKE" 2>&1 || true)
-assert_contains "$out" "VALHEIM_PASSWORD is not set" \
-    && refute_contains "$out" "fake-valheim: listening" && pass
-
-it "refuses a password Valheim would reject as too short"
-out=$(docker run --rm -e VALHEIM_PASSWORD=abc "$FAKE" 2>&1 || true)
-assert_contains "$out" "at least 5 characters" && pass
-
-it "refuses a password hidden inside the world name"
-out=$(docker run --rm -e VALHEIM_PASSWORD=secret -e VALHEIM_WORLD=mysecretworld "$FAKE" 2>&1 || true)
-assert_contains "$out" "cannot appear inside the world name" && pass
 
 it "keeps the world on /data, where a container recreate cannot lose it"
 run_fake
@@ -42,20 +33,26 @@ if wait_for_log "$CONTAINER" "fake-valheim: args"; then
     assert_contains "$args" "-savedir /data" && pass
 fi
 
-it "passes the configured name, world and port through to the server"
-run_fake -e VALHEIM_NAME=Harbour -e VALHEIM_WORLD=Longship -e VALHEIM_PORT=2466
+it "injects the password from the environment, not from the command line"
+# The password is a secret, so it comes from VALHEIM_PASSWORD (never asked for on
+# the compose command line); the adapter puts it on argv because Valheim has no
+# other channel for it.
+run_fake
+if wait_for_log "$CONTAINER" "fake-valheim: args"; then
+    args=$(docker logs "$CONTAINER" 2>&1 | sed -n 's/^fake-valheim: args //p')
+    assert_contains "$args" "-password $PASSWORD" && pass
+fi
+
+it "forwards the container's own arguments (compose command:) to the server"
+# `command:` replaces CMD wholesale, so it names the wrapper first (as postgres
+# names postgres), then the flags.
+run_cmd valheim-server -name Harbour -world Longship -port 2466 -crossplay
 if wait_for_log "$CONTAINER" "fake-valheim: args"; then
     args=$(docker logs "$CONTAINER" 2>&1 | sed -n 's/^fake-valheim: args //p')
     assert_contains "$args" "-name Harbour" \
         && assert_contains "$args" "-world Longship" \
-        && assert_contains "$args" "-port 2466" && pass
-fi
-
-it "forwards extra arguments for anything this adapter does not model"
-run_fake -e VALHEIM_EXTRA_ARGS="-crossplay -preset casual"
-if wait_for_log "$CONTAINER" "fake-valheim: args"; then
-    args=$(docker logs "$CONTAINER" 2>&1 | sed -n 's/^fake-valheim: args //p')
-    assert_contains "$args" "-crossplay -preset casual" && pass
+        && assert_contains "$args" "-port 2466" \
+        && assert_contains "$args" "-crossplay" && pass
 fi
 
 it "stops with SIGINT, which is the signal Valheim saves on"
@@ -81,19 +78,17 @@ if wait_for_log "$CONTAINER" "fake-valheim: listening"; then
     fi
 fi
 
-it "reports unhealthy when nothing is listening"
-if docker exec "$CONTAINER" env CHANDLERY_HEALTH_PORT=2499 \
-        /usr/local/lib/chandlery/health >/dev/null 2>&1; then
-    fail "health probe passed against a dead port"
-else
-    pass
-fi
-
-it "queries the game port plus one, as Valheim requires"
-run_fake -e VALHEIM_PORT=2466
-if wait_for_log "$CONTAINER" "fake-valheim: listening on udp/2466 (query udp/2467)"; then
-    if docker exec "$CONTAINER" /usr/local/lib/chandlery/health >/dev/null 2>&1; then pass; else
-        fail "health probe did not follow VALHEIM_PORT to the query port"
+it "reports unhealthy when nothing answers the query"
+# Override the probe itself — call the A2S tool at a dead port — rather than
+# feeding the hook a fake port. There is no port env to bend: the hook probes the
+# fixed container-internal query port (2457), and this proves the tool fails when
+# nothing is there.
+run_fake
+if wait_for_log "$CONTAINER" "fake-valheim: listening"; then
+    if docker exec "$CONTAINER" /usr/local/bin/chandlery-a2s -host 127.0.0.1 -port 2499 >/dev/null 2>&1; then
+        fail "the A2S probe passed against a dead port"
+    else
+        pass
     fi
 fi
 

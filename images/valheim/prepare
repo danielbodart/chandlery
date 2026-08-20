@@ -1,32 +1,15 @@
 #!/bin/sh
-# Runs as the game user before the server starts. Valheim refuses to start on
-# several conditions and is vague about which; check them here where we can say
-# something useful. The game is baked at /opt/valheim, so there is nothing to
-# fetch — this is validation only.
+# Runs as the game user before the server starts. The game is baked at
+# /opt/valheim, so there is nothing to fetch — this only sanity-checks the baked
+# payload and lays out /data.
+#
+# We do NOT validate the password (length, or that it is absent from the world
+# name). Those are Valheim's own rules, which we do not own and which drift; when
+# they are broken the server says so itself. Re-encoding them here would just be
+# a second, staler copy to keep in sync.
 set -eu
 
 log() { printf '[valheim] %s\n' "$*" >&2; }
-
-if [ -z "${VALHEIM_PASSWORD:-}" ]; then
-    log "ERROR: VALHEIM_PASSWORD is not set, and the server will not start without one."
-    log "ERROR: pass -e VALHEIM_PASSWORD=... (at least 5 characters)."
-    exit 78
-fi
-
-# Both of these make the server exit during startup with little explanation.
-if [ "${#VALHEIM_PASSWORD}" -lt 5 ]; then
-    log "ERROR: VALHEIM_PASSWORD must be at least 5 characters; it is ${#VALHEIM_PASSWORD}."
-    exit 78
-fi
-
-world="${VALHEIM_WORLD:-Dedicated}"
-case "$world" in
-    *"$VALHEIM_PASSWORD"*)
-        log "ERROR: the password cannot appear inside the world name ($world)."
-        log "ERROR: Valheim rejects this, and does not say so clearly."
-        exit 78
-        ;;
-esac
 
 game=/opt/valheim
 [ -x "$game/valheim_server.x86_64" ] || { log "no server baked at $game; this image is misbuilt"; exit 70; }

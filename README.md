@@ -7,7 +7,7 @@
 
 > A *chandlery* is the harbour-side shop that provisions ships for their voyage. This one provisions your servers with their game.
 
-Status: **all three games — Minecraft Bedrock, Valheim, Hytale — are built, proven on a real host, and publishing to GHCR** The images *pin-and-verify* rather than baking the game in: each records exactly which version and fetches it from upstream on first start, verified, onto a `/cache` volume. Release CI rebuilds each on upstream release. 
+Status: **all three games — Minecraft Bedrock, Valheim, Hytale — are built, proven on a real host, and publishing to GHCR.** The game is *baked into the image at build time*, verified against its checksum, so the tag names an exact, immutable version and `/data` is the only volume. Release CI rebuilds each image on upstream release.
 
 ## Running one
 
@@ -16,17 +16,14 @@ $ docker run -d --name bedrock -p 19132:19132/udp -v bedrock-data:/data \
     --stop-timeout 300 ghcr.io/danielbodart/chandlery/bedrock:latest
 ```
 
-There is a fuller [example compose file](./examples/compose.yaml) with both games, sensible stop grace periods
+There is a fuller [example compose file](./examples/compose.yaml) with sensible stop grace periods.
 
-| | Bedrock | Valheim | Hytale |
-| --- | --- | --- | --- |
-| Tag is | the Mojang version | the game version (0.221.12) | the game version (0.5.9) |
-| Stops by | `stop` on the console | `SIGINT` | `/stop` on the console |
-| Health check | RakNet ping ([mc-monitor](https://github.com/itzg/mc-monitor)) | Steam `A2S_INFO` | none (no in-box probe) |
-| Ports | 19132/udp | 2456/udp, 2457/udp (query) | 5520/udp (QUIC) |
-| Config | `/data/server.properties` | `VALHEIM_*` env | `HYTALE_*` env |
-| Pinned by | versioned URL + sha256 | depot + manifest gid | version + patchline (+ sha256) |
-| Needs a credential | no | a licensed Steam account | a Hytale downloader token |
+Each image documents its own ports, configuration, stop signal and health check
+in its folder — ports and lifecycle differ because the three games do:
+
+- [**Bedrock**](./images/bedrock/#readme) — configured by `/data/server.properties`
+- [**Valheim**](./images/valheim/#readme) — `VALHEIM_PASSWORD`, then flags via compose `command:`
+- [**Hytale**](./images/hytale/#readme) — configured by `/data/config.json`; `/auth login` on the console
 
 A few things worth knowing before the first run:
 
@@ -55,7 +52,7 @@ Both sit beside [**portical**](https://github.com/danielbodart/portical) in the 
 
 ## Why not LinuxGSM / itzg / a panel?
 
-LinuxGSM downloads the game inside the container at runtime, so the image tag says nothing about the version, and its lifecycle is pre-Docker shell. itzg is excellent for Minecraft but Minecraft-only and also runtime-download. Panels install into volumes. None cover **Bedrock + Steam + Hytale** with **image = version + native lifecycle + rebuild-on-release** — because those three games use three different distribution mechanisms. Chandlery unifies them behind one skeleton. See [PLAN.md](./PLAN.md) for the full comparison and prior-art references.
+LinuxGSM downloads the game inside the container at runtime, so the image tag says nothing about the version, and its lifecycle is pre-Docker shell. itzg is excellent for Minecraft but Minecraft-only and also runtime-download. Panels install into volumes. None cover **Bedrock + Steam + Hytale** with **image = version + native lifecycle + rebuild-on-release** — because those three games use three different distribution mechanisms. Chandlery unifies them behind one skeleton.
 
 ## Working on it
 

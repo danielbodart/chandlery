@@ -113,6 +113,7 @@ LABEL org.opencontainers.image.title="Minecraft Bedrock Dedicated Server" \
       org.opencontainers.image.version="${BEDROCK_VERSION}" \
       org.opencontainers.image.revision="${CHANDLERY_REVISION}" \
       org.opencontainers.image.source="https://github.com/danielbodart/chandlery" \
+      org.opencontainers.image.description="Minecraft Bedrock dedicated server, image=version. Config in /data/server.properties. Docs: https://github.com/danielbodart/chandlery/tree/master/images/bedrock#readme" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 # 19132/udp is the game; 19133/udp is the IPv6 socket BDS insists on binding.

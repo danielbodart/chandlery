@@ -1,7 +1,12 @@
 #!/bin/sh
 # Runs as the game user before the server starts. The game is baked at
-# /opt/hytale, so there is nothing to fetch — this notes the runtime auth env
-# (unless offline) and lays out /data.
+# /opt/hytale, so there is nothing to fetch — this only sanity-checks the baked
+# payload and lays out /data.
+#
+# Auth is not our concern: the server reads its own session tokens from the
+# environment (HYTALE_SERVER_SESSION_TOKEN / HYTALE_SERVER_IDENTITY_TOKEN) and
+# logs its own status — including "use /auth login" — when they are unset. We do
+# not re-state that here; the game speaks for itself.
 set -eu
 
 log() { printf '[hytale] %s\n' "$*" >&2; }
@@ -10,28 +15,6 @@ log() { printf '[hytale] %s\n' "$*" >&2; }
 
 game=/opt/hytale
 [ -f "$game/Server/HytaleServer.jar" ] || { log "no server jar baked at $game; this image is misbuilt"; exit 70; }
-
-mode="${HYTALE_AUTH_MODE:-online}"
-
-# Server-session auth is token passthrough (PLAN 7.1): a deployer MAY inject two
-# tokens, exactly like Valheim's password, and the server reads them from the
-# environment itself — never a command line, where argv is world-readable.
-#
-# But env tokens are only one way in, and they are NOT required. The game also
-# authenticates at runtime with `/auth login` on the console (persisting to its
-# own AuthCredentialStore under /data), and it boots online-unauthenticated
-# until then — it warns and runs, which is exactly what LAN and direct-connect
-# servers want. So online mode never blocks on the tokens; we only note when
-# they are absent, and point at the two ways to authenticate. Offline mode needs
-# no credentials at all.
-if [ "$mode" != "offline" ]; then
-    if [ -z "${HYTALE_SERVER_SESSION_TOKEN:-}" ] || [ -z "${HYTALE_SERVER_IDENTITY_TOKEN:-}" ]; then
-        log "no server session tokens in the environment; booting online-unauthenticated."
-        log "authenticate at runtime with:  chandlery-console /auth login"
-        log "(or inject HYTALE_SERVER_SESSION_TOKEN + HYTALE_SERVER_IDENTITY_TOKEN,"
-        log " or set HYTALE_AUTH_MODE=offline for a LAN or test server)."
-    fi
-fi
 
 # The server writes its state relative to the working directory (universe/,
 # logs/, config.json, …); run keeps that on /data, so make sure it exists.

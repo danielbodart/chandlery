@@ -29,31 +29,25 @@ assets="$game/Assets"
 # working directory; keep that on /data.
 cd /data
 
-set -- java
+# Assemble the launch, then append whatever arguments the container was given
+# (compose `command:` / `docker run … <args>`) so extra or override flags pass
+# straight through to the server with no env re-encoding — `--auth-mode offline`,
+# `--bind host:port`, `--max-players 40`, anything the server accepts. "$@" here
+# is still the container's own args: nothing has touched it yet.
+#
+# Auth is deliberately absent: the server reads its session tokens from the
+# environment itself (HYTALE_SERVER_SESSION_TOKEN / HYTALE_SERVER_IDENTITY_TOKEN,
+# its own variables), never argv, and logs its own status when they are unset.
+set -- -jar "$jar" --assets "$assets" --disable-sentry \
+    --backup --backup-dir /data/backups --backup-frequency 30 "$@"
+
+# JVM args go before -jar, so prepend them. A pre-trained AOT cache would cut
+# boot time; 0.5.9 ships none, but honour one if a future build bakes it.
+aot=$(find "$game" -maxdepth 3 -name 'HytaleServer.aot' 2>/dev/null | head -1)
+[ -n "$aot" ] && set -- "-XX:AOTCache=$aot" "$@"
 # Custom JVM options (heap, GC) via /data/jvm.options, one flag per line — the
 # same @-file the official launcher reads, just from the volume.
-[ -f /data/jvm.options ] && set -- "$@" "@/data/jvm.options"
-# A pre-trained AOT cache would cut boot time; 0.5.9 ships none, but honour one
-# if a future build does.
-aot=$(find "$game" -maxdepth 3 -name 'HytaleServer.aot' 2>/dev/null | head -1)
-[ -n "$aot" ] && set -- "$@" "-XX:AOTCache=$aot"
-
-set -- "$@" -jar "$jar" --assets "$assets" --disable-sentry \
-    --backup --backup-dir /data/backups --backup-frequency 30
-
-# The server reads its session tokens from the environment itself, so online
-# mode passes nothing on the command line (argv is world-readable). Offline mode
-# needs no credentials at all and is for LAN and our own tests.
-if [ "${HYTALE_AUTH_MODE:-online}" = "offline" ]; then
-    set -- "$@" --auth-mode offline
-fi
-
-[ -n "${HYTALE_BIND:-}" ] && set -- "$@" --bind "$HYTALE_BIND"
-
-if [ -n "${HYTALE_EXTRA_ARGS:-}" ]; then
-    # Deliberately unquoted, so the caller can pass several flags.
-    # shellcheck disable=SC2086
-    set -- "$@" $HYTALE_EXTRA_ARGS
-fi
+[ -f /data/jvm.options ] && set -- "@/data/jvm.options" "$@"
+set -- java "$@"
 
 exec "$@"

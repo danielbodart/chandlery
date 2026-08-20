@@ -5,9 +5,11 @@
 # and restarted a live server over every few minutes.
 set -eu
 
-port="${CHANDLERY_HEALTH_PORT:-}"
-if [ -z "$port" ]; then
-    port=$(sed -n 's/^[[:space:]]*server-port=\([0-9]*\).*/\1/p' /data/server.properties 2>/dev/null | tail -1)
-fi
+# The probe runs inside the container against 127.0.0.1, so it needs the
+# container-internal port. That lives in server.properties — the game's own
+# config, and the native place to change it — so read it there, the one source
+# of truth. (You would normally remap on the host side, -p 19199:19132, and
+# leave server-port alone.) Fall back to the default if it is unset.
+port=$(sed -n 's/^[[:space:]]*server-port=\([0-9]*\).*/\1/p' /data/server.properties 2>/dev/null | tail -1)
 
 exec /usr/local/bin/mc-monitor status-bedrock -host 127.0.0.1 -port "${port:-19132}"

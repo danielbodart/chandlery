@@ -17,4 +17,7 @@ game=/opt/bedrock
 
 cd "$game"
 export LD_LIBRARY_PATH=".:${LD_LIBRARY_PATH:-}"
-exec ./bedrock_server
+# BDS configures itself from /data/server.properties, not the command line, so
+# there are normally no arguments — but forward whatever the container was given
+# (compose `command:`), so any flag a future BDS accepts passes straight through.
+exec ./bedrock_server "$@"

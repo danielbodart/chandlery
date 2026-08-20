@@ -6,11 +6,6 @@
 # this pid expecting to reach the server itself, not a shell holding its hand.
 set -eu
 
-: "${VALHEIM_NAME:=Chandlery}"
-: "${VALHEIM_WORLD:=Dedicated}"
-: "${VALHEIM_PORT:=2456}"
-: "${VALHEIM_PUBLIC:=1}"
-
 # The server is baked into the image.
 game=/opt/valheim
 [ -x "$game/valheim_server.x86_64" ] || {
@@ -36,22 +31,15 @@ if [ -n "$sc" ] && [ -f "$sc" ]; then
     done
 fi
 
-set -- ./valheim_server.x86_64 \
-    -nographics -batchmode \
-    -name "$VALHEIM_NAME" \
-    -port "$VALHEIM_PORT" \
-    -world "$VALHEIM_WORLD" \
-    -password "$VALHEIM_PASSWORD" \
-    -public "$VALHEIM_PUBLIC" \
-    -savedir /data
-
-# Valheim supports -savedir, so unlike Bedrock the world simply lives on the
-# volume and the game directory stays read-only in spirit.
-
-if [ -n "${VALHEIM_EXTRA_ARGS:-}" ]; then
-    # Deliberately unquoted: the point is to let the caller pass several flags.
-    # shellcheck disable=SC2086
-    set -- "$@" $VALHEIM_EXTRA_ARGS
-fi
+# Valheim takes its whole configuration on the command line — it has no config
+# file. We set only what is baked or non-negotiable: headless, and the world on
+# the volume (-savedir, so the world lives on /data and the game dir stays
+# read-only in spirit). The password comes from the environment — it is a
+# secret, so it belongs there rather than in a plaintext compose `command:`.
+# Everything else — -name, -world, -port, -public — defaults in the image's CMD
+# and is overridable, along with any extra flags, through compose `command:`.
+# "$@" is still the container's own args here: append them after ours.
+set -- ./valheim_server.x86_64 -nographics -batchmode -savedir /data \
+    -password "${VALHEIM_PASSWORD:-}" "$@"
 
 exec "$@"

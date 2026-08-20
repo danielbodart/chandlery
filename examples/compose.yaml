@@ -2,7 +2,7 @@
 #
 # Deliberately absent: any Tidewaiter configuration. Auto-update policy belongs
 # to whoever is deploying, and Tidewaiter documents its own labels and defaults
-# far better than a copy here that would drift. See PLAN.md section 5.
+# far better than a copy here that would drift.
 #
 #   docker compose up -d
 #   docker compose logs -f bedrock
@@ -44,41 +44,29 @@ services:
     stop_grace_period: 5m
 
     environment:
-      VALHEIM_NAME: Chandlery
-      VALHEIM_WORLD: Dedicated
-      # Required, at least 5 characters, and it must not appear in the world
-      # name. Put it in a .env file next to this one rather than here.
+      # The one required setting, and the only environment variable this image
+      # reads — it is a secret, so keep it in a .env file next to this one.
       VALHEIM_PASSWORD: ${VALHEIM_PASSWORD:?set VALHEIM_PASSWORD in .env}
-      VALHEIM_PUBLIC: "1"
-      # Steam will not let anonymous accounts download this depot, so the fetch
-      # uses your own licensed Steam account. The username is not secret; the
-      # token is the secret below.
-      STEAM_USERNAME: ${STEAM_USERNAME:?set STEAM_USERNAME in .env}
 
-    # The licensed account's DepotDownloader token (its ~640-byte account.config).
-    # Generated once with DepotDownloader -remember-password; see PLAN.md 7.3.
-    secrets:
-      - steam-login
+    # Everything else is a native server flag. The image already defaults
+    # -name/-world/-port/-public; override them, or add any other flag, here.
+    # `command:` replaces the whole default set, so it names the wrapper first
+    # and restates the flags you want to keep. Drop this line to take the
+    # defaults as-is. (The Steam account that licenses Valheim is a *build*
+    # credential, baked in at build time — nothing to supply at run time.)
+    command: ["valheim-server", "-name", "Chandlery", "-world", "Dedicated", "-public", "1"]
 
     ports:
       - "2456:2456/udp"
-      # The Steam query port, which is where the health check looks. Valheim
-      # derives it from the game port and will not let you set it separately.
+      # The Steam query port (game port + 1), where the health check looks.
+      # Valheim derives it from the game port and will not let you set it apart.
       - "2457:2457/udp"
 
     volumes:
       - valheim-data:/data
-      # The fetched game (~1.6 GB) and the SteamCMD client live here, so a
-      # container recreate does not re-download them.
-      - valheim-cache:/cache
 
     networks:
       - games
-
-secrets:
-  steam-login:
-    # The DepotDownloader account.config for a Steam account that owns Valheim.
-    file: ./steam-account.config
 
 networks:
   games:
@@ -90,4 +78,3 @@ networks:
 volumes:
   bedrock-data:
   valheim-data:
-  valheim-cache:

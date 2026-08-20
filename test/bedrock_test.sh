@@ -114,9 +114,12 @@ if wait_for_log "$CONTAINER" "raknet-pong: listening"; then
 fi
 
 it "reports unhealthy when nothing is listening"
-if docker exec "$CONTAINER" env CHANDLERY_HEALTH_PORT=19199 \
-        /usr/local/lib/chandlery/health >/dev/null 2>&1; then
-    fail "health probe passed against a dead port"
+# Override the probe itself — the RakNet tool at a dead port — rather than
+# feeding the hook a fake port; the hook reads the real port from
+# server.properties, and this proves the tool fails when nothing answers.
+if docker exec "$CONTAINER" /usr/local/bin/mc-monitor status-bedrock \
+        -host 127.0.0.1 -port 19199 >/dev/null 2>&1; then
+    fail "the RakNet probe passed against a dead port"
 else
     pass
 fi

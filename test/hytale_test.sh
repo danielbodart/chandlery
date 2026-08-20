@@ -14,63 +14,62 @@ CONTAINER=chandlery-hytale-test-$$
 cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 
-run_fake() {
+run_fake() {  # docker options go before the image
     cleanup
     docker run -d --name "$CONTAINER" "$@" "$FAKE" >/dev/null
 }
 
+run_cmd() {  # arguments go after the image, the way compose `command:` passes them
+    cleanup
+    docker run -d --name "$CONTAINER" "$FAKE" "$@" >/dev/null
+}
+
 echo "hytale adapter"
 
-it "boots online-unauthenticated when the server tokens are absent, and says how"
-# Env tokens are optional: the game authenticates online-unauthenticated and can
-# be logged in later with `/auth login` on the console, so a missing token warns
-# and boots rather than refusing. Online, so no --auth-mode offline on argv.
+it "boots online by default, adding no auth flags to the command line"
+# Online is the game's own default and needs no token to boot; the server reads
+# any session tokens from its own environment and logs its own auth status. The
+# adapter adds nothing about auth to argv.
 run_fake
 if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
-    logs=$(docker logs "$CONTAINER" 2>&1)
-    args=$(echo "$logs" | sed -n 's/^fake-java: args //p')
-    assert_contains "$logs" "/auth login" \
-        && refute_contains "$args" "--auth-mode offline" && pass
+    args=$(docker logs "$CONTAINER" 2>&1 | sed -n 's/^fake-java: args //p')
+    assert_contains "$args" "--assets " \
+        && assert_contains "$args" "-jar " \
+        && refute_contains "$args" "--auth-mode" && pass
 fi
 
-it "starts in offline mode with no credentials at all"
-run_fake -e HYTALE_AUTH_MODE=offline
+it "forwards the container's own arguments (compose command:) to the server"
+# --auth-mode offline, --max-players … — any server flag passes straight through,
+# no env re-encoding.
+# `command:` replaces CMD wholesale, so it names the wrapper first, then flags.
+run_cmd hytale-server --auth-mode offline --max-players 40
 if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
     args=$(docker logs "$CONTAINER" 2>&1 | sed -n 's/^fake-java: args //p')
     assert_contains "$args" "--auth-mode offline" \
-        && assert_contains "$args" "--disable-sentry" \
-        && assert_contains "$args" "--assets " \
-        && assert_contains "$args" "-jar " && pass
+        && assert_contains "$args" "--max-players 40" \
+        && assert_contains "$args" "--disable-sentry" && pass
 fi
 
 it "needs no downloader token at start — the game is baked"
 # prepare must not demand HYTALE_ACCESS_TOKEN: the fetch happened at build.
-run_fake -e HYTALE_AUTH_MODE=offline
+run_fake
 if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
     logs=$(docker logs "$CONTAINER" 2>&1)
     refute_contains "$logs" "HYTALE_ACCESS_TOKEN is not set" && pass
 fi
 
 it "keeps the server session tokens off the command line"
-# The server reads them from the environment; argv is world-readable via ps.
+# The server reads them from its own environment; argv is world-readable via ps.
 run_fake -e HYTALE_SERVER_SESSION_TOKEN=sess-secret \
          -e HYTALE_SERVER_IDENTITY_TOKEN=id-secret
 if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
     args=$(docker logs "$CONTAINER" 2>&1 | sed -n 's/^fake-java: args //p')
     refute_contains "$args" "sess-secret" \
-        && refute_contains "$args" "id-secret" \
-        && refute_contains "$args" "--auth-mode offline" && pass
-fi
-
-it "forwards extra arguments for anything this adapter does not model"
-run_fake -e HYTALE_AUTH_MODE=offline -e HYTALE_EXTRA_ARGS="--max-players 40"
-if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
-    args=$(docker logs "$CONTAINER" 2>&1 | sed -n 's/^fake-java: args //p')
-    assert_contains "$args" "--max-players 40" && pass
+        && refute_contains "$args" "id-secret" && pass
 fi
 
 it "shuts down through the console, and saves, rather than being killed"
-run_fake -e HYTALE_AUTH_MODE=offline
+run_fake
 if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
     docker stop --timeout 30 "$CONTAINER" >/dev/null
     logs=$(docker logs "$CONTAINER" 2>&1)
