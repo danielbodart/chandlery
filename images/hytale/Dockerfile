@@ -63,7 +63,15 @@ ARG CHANDLERY_REVISION=
 
 USER root
 
-# Java 25, from Temurin. No curl/unzip/jq: the game is baked.
+# curl for the one runtime need: minting a server session from a Treesinger
+# broker at boot (images/hytale/run, when TREESINGER_URL is set). The game
+# itself is baked, so there is nothing else to fetch — no unzip, no jq (run
+# extracts the two JWTs with sed).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# Java 25, from Temurin.
 COPY --from=java /opt/java/openjdk /opt/java/openjdk
 ENV JAVA_HOME=/opt/java/openjdk \
     PATH=/opt/java/openjdk/bin:/usr/local/bin:/usr/bin:/bin

@@ -29,15 +29,43 @@ assets="$game/Assets"
 # working directory; keep that on /data.
 cd /data
 
+# Server-session auth (PLAN 7.1). If a Treesinger broker is configured, mint a
+# fresh session for this boot and hand it to the server through its OWN
+# variables (HYTALE_SERVER_SESSION_TOKEN / _IDENTITY_TOKEN): the server reads
+# those from the environment itself, so the JWTs never touch argv (world-readable
+# via /proc). We fetch on every boot — the tokens are short-lived and the server
+# self-refreshes from there, so a container recreated at any time comes up
+# authenticated. If the broker cannot be reached we warn and boot unauthenticated:
+# the same graceful state as no tokens at all, recoverable without a crash.
+if [ -n "${TREESINGER_URL:-}" ]; then
+    if resp=$(curl -fsS -m 10 -X POST "$TREESINGER_URL/v1/session" 2>/dev/null); then
+        # Flat JSON: {"sessionToken":"…","identityToken":"…",…}. Extract without
+        # jq (not in the image); JWTs are base64url + '.', never a '"', so
+        # [^"]* is a safe field match.
+        st=$(printf '%s' "$resp" | sed -n 's/.*"sessionToken":"\([^"]*\)".*/\1/p')
+        it=$(printf '%s' "$resp" | sed -n 's/.*"identityToken":"\([^"]*\)".*/\1/p')
+        if [ -n "$st" ] && [ -n "$it" ]; then
+            export HYTALE_SERVER_SESSION_TOKEN="$st"
+            export HYTALE_SERVER_IDENTITY_TOKEN="$it"
+            echo "[hytale] authenticated via Treesinger ($TREESINGER_URL)" >&2
+        else
+            echo "[hytale] WARNING: Treesinger response carried no tokens; booting unauthenticated" >&2
+        fi
+    else
+        echo "[hytale] WARNING: could not reach Treesinger at $TREESINGER_URL; booting unauthenticated" >&2
+    fi
+fi
+
 # Assemble the launch, then append whatever arguments the container was given
 # (compose `command:` / `docker run … <args>`) so extra or override flags pass
 # straight through to the server with no env re-encoding — `--auth-mode offline`,
 # `--bind host:port`, `--max-players 40`, anything the server accepts. "$@" here
 # is still the container's own args: nothing has touched it yet.
 #
-# Auth is deliberately absent: the server reads its session tokens from the
-# environment itself (HYTALE_SERVER_SESSION_TOKEN / HYTALE_SERVER_IDENTITY_TOKEN,
-# its own variables), never argv, and logs its own status when they are unset.
+# Auth stays off argv: the server reads its session tokens from the environment
+# itself (HYTALE_SERVER_SESSION_TOKEN / HYTALE_SERVER_IDENTITY_TOKEN) — set by the
+# Treesinger step above, injected directly by a deployer, or simply absent, in
+# which case the server logs its own status and runs unauthenticated.
 set -- -jar "$jar" --assets "$assets" --disable-sentry \
     --backup --backup-dir /data/backups --backup-frequency 30 "$@"
 

@@ -11,6 +11,11 @@ ARG BASE=chandlery/base:test
 FROM ${BASE}
 USER root
 
+# Mirror the real image: curl is present for run's boot-time Treesinger fetch.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
 ARG HYTALE_VERSION=0.0.0-fake
 # Mirror the real baked layout: Server/HytaleServer.jar and Assets.zip next to
 # it, which is what images/hytale/run locates and points --assets at.

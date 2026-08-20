@@ -68,6 +68,24 @@ if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
         && refute_contains "$args" "id-secret" && pass
 fi
 
+it "boots unauthenticated, with a warning, when the Treesinger broker is unreachable"
+# TREESINGER_URL set but nothing listening: the fetch fails and the server still
+# comes up rather than crashing. (A live mint is verified on the host against a
+# real broker.)
+run_fake -e TREESINGER_URL=http://127.0.0.1:1
+if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
+    logs=$(docker logs "$CONTAINER" 2>&1)
+    assert_contains "$logs" "could not reach Treesinger" && pass
+fi
+
+it "extracts both JWTs from a Treesinger session response, jq-free"
+# Mirrors the parse in images/hytale/run (POSIX sed, no jq in the image). JWTs
+# are base64url + '.', so a "[^\"]*" field match is safe.
+body='{"sessionToken":"aaa.bbb.ccc","identityToken":"xxx.yyy.zzz","expiresAt":"2026-01-07T15:00:00Z"}'
+st=$(printf '%s' "$body" | sed -n 's/.*"sessionToken":"\([^"]*\)".*/\1/p')
+it_tok=$(printf '%s' "$body" | sed -n 's/.*"identityToken":"\([^"]*\)".*/\1/p')
+assert_equals "aaa.bbb.ccc" "$st" && assert_equals "xxx.yyy.zzz" "$it_tok" && pass
+
 it "shuts down through the console, and saves, rather than being killed"
 run_fake
 if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
