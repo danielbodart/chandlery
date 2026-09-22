@@ -50,8 +50,10 @@ jobs:
 
       - id: upstream
         name: Ask Mojang what it currently ships
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          version="${{ inputs.version }}"
+          version="$INPUT_VERSION"
           [ -n "$version" ] || version="$(./images/bedrock/upstream-version)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Upstream Bedrock: $version"
