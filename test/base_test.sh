@@ -70,6 +70,39 @@ it "runs the server as the non-root chandlery user"
 # user, which tells us nothing about who the server process actually is.
 assert_contains "$(docker logs "$CONTAINER" 2>&1)" "fake-server: running as chandlery" && pass
 
+it "accepts console commands typed at docker attach"
+cleanup
+docker run -d -i --name "$CONTAINER" "$HOOKED" >/dev/null
+if wait_for_log "$CONTAINER" "fake-server: listening"; then
+    # attach streams until the container exits, so bound it; the line is in
+    # well before then. KILL, not TERM: attach proxies a TERM on to the
+    # container, which would stop the server this is checking on.
+    ( printf 'say from attach\n' | timeout -s KILL 3 docker attach "$CONTAINER" ) >/dev/null 2>&1 || true
+    assert_contains "$(docker logs "$CONTAINER" 2>&1)" \
+        "fake-server: console said [say from attach]" \
+        && assert_equals "true" "$(docker inspect -f '{{.State.Running}}' "$CONTAINER")" \
+            "server died when attach went away" \
+        && pass
+fi
+
+it "on a TTY, says how to detach and turns Ctrl-C into a saving stop"
+cleanup
+docker run -d -it --name "$CONTAINER" "$HOOKED" >/dev/null
+if wait_for_log "$CONTAINER" "fake-server: listening"; then
+    # `script` gives docker attach the terminal it insists on; attaching
+    # resizes the TTY (the hint), then Ctrl-C goes through its line discipline.
+    { sleep 2; printf '\003'; sleep 5; } \
+        | timeout 10 script -qc "docker attach $CONTAINER" /dev/null >/dev/null 2>&1 || true
+    docker wait "$CONTAINER" >/dev/null
+    logs=$(docker logs "$CONTAINER" 2>&1)
+    code=$(docker inspect -f '{{.State.ExitCode}}' "$CONTAINER")
+    assert_contains "$logs" "Ctrl-P Ctrl-Q detaches" \
+        && assert_contains "$logs" "fake-server: console said [stop]" \
+        && assert_contains "$logs" "fake-server: world saved" \
+        && assert_equals "0" "$code" "container exit code" \
+        && pass
+fi
+
 it "drops from root to chandlery, and adopts /data on the way"
 cleanup
 # A root-owned bind mount is the normal homelab case; the entrypoint should

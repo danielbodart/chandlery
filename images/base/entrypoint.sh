@@ -70,9 +70,30 @@ exec 3<>"$CHANDLERY_CONSOLE"
 
 # The subshell drops fd 3 so the server does not inherit our grip on the
 # console, then execs, so $! is the server itself and not a wrapper.
-( exec 3<&-; exec "$@" <"$CHANDLERY_CONSOLE" ) &
+#
+# setsid gives the server a session of its own. With a TTY (`docker run -t`,
+# compose `tty: true`), Ctrl-C at `docker attach` signals the terminal's whole
+# foreground group; the server must hear about that through the stop hook, not
+# as a raw SIGINT. setsid only forks when it is already a group leader, which
+# this subshell is not, so $! is still the server.
+( exec 3<&-; exec setsid "$@" <"$CHANDLERY_CONSOLE" ) &
 server_pid=$!
 log "server started (pid $server_pid): $*"
+
+# `docker attach` types at the container's stdin: pass it on to the console, so
+# it sits alongside `chandlery-console` and the stop hook as one more writer.
+# Without `stdin_open` / `-i`, stdin is /dev/null and this ends at once, which is
+# harmless: fd 3 is what keeps the console open, not this. The detour through
+# fd 4 is needed because sh gives background jobs /dev/null for stdin, and dash
+# does not count a bare `<&0` as redirecting it.
+exec 4<&0
+cat <&4 4<&- >&3 &
+exec 4<&-
+
+# Attaching to a TTY resizes it, and the resize arrives as SIGWINCH: the one
+# moment we know someone has just attached and can tell them how to leave.
+attach_hint() { log "attached: type server commands here; Ctrl-P Ctrl-Q detaches, Ctrl-C stops the server (saving first)"; }
+[ -t 0 ] && trap attach_hint WINCH
 
 alive() { kill -0 "$server_pid" 2>/dev/null; }
 

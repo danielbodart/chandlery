@@ -37,15 +37,17 @@ Most game-server images are a shell script that happens to run inside a containe
 
 ### Attach and detach — no `tmux`, no `screen`
 
-The container *is* the session. The server's console is on the container's own stdio, so:
+The container *is* the session. The server's console is on the container's own stdio, so with `stdin_open: true` and `tty: true` in compose (`-it` on `docker run`):
 
 ```console
-$ docker attach chandlery-bedrock          # watch the live console
+$ docker attach chandlery-bedrock          # watch the live console, and type at it
                                            #   detach with Ctrl-P Ctrl-Q — the game keeps running
 $ docker exec chandlery-bedrock chandlery-console say hello   # type a command in from anywhere
 ```
 
-Detaching leaves the server running because detaching from a container is just… detaching — that is what Docker's attach/detach *is*. There is no multiplexer to install, keep alive, or reattach to across a reboot. The entrypoint wires the server's stdin to a FIFO so `chandlery-console` (and the stop hook) can type at it while `docker attach` watches, and holds that FIFO open for the container's life so the server never reads EOF and quits.
+Portainer's *Attach* works the same way, and closing the tab just detaches. Detaching leaves the server running because detaching from a container is just… detaching — that is what Docker's attach/detach *is*. There is no multiplexer to install, keep alive, or reattach to across a reboot. The entrypoint wires the server's stdin to a FIFO that the attached terminal, `chandlery-console` and the stop hook all write into, and holds that FIFO open for the container's life so the server never reads EOF and quits. On attach it prints a one-line reminder of how to leave.
+
+Ctrl-C at an attached TTY is a stop, not a kill: the server runs in a session of its own, so the interrupt reaches the entrypoint alone, which saves and quits through the stop hook exactly as `docker stop` does. Without a TTY, attach still takes commands, just with no echo or line editing; without `stdin_open` it only watches.
 
 ### A stop that means what it says
 

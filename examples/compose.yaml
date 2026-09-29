@@ -18,6 +18,11 @@ services:
     container_name: chandlery-bedrock
     restart: unless-stopped
 
+    # A console you can `docker attach` to (or Portainer's Attach) and type at.
+    # Ctrl-P Ctrl-Q detaches; Ctrl-C stops the server, saving first.
+    stdin_open: true
+    tty: true
+
     # The whole point of the stop hook is that the world is saved before the
     # process exits. Give a large world time to finish; Docker sends SIGKILL
     # when this runs out, and that is the outcome to avoid.
