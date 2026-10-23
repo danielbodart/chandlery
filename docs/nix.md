@@ -43,7 +43,9 @@ nix/
     fake-bds, fake-bds.nix    a Bedrock-shaped package: the real adapter around a fake BDS
     module.nix                VM: the unit mechanics on the fake (fast, no download)
     bedrock.nix               VM: real BDS end to end
+    fake-hytale.nix           a Hytale-shaped package: the real adapter on test/fixtures/fake-hytale/java
     hytale.nix                VM: hytale adapter on fake java + fake Treesinger
+    hytale-real.nix           VM: the real Hytale server (heavyChecks, not checks)
     valheim.nix               VM: valheim adapter on test/fixtures/fake-valheim
     template.nix              VM: the plain-systemd template units, no module
 systemd/
@@ -55,7 +57,7 @@ systemd/
   bin/chandlery-prepare       ExecStartPre: stage /opt, run package prepare, set keys
   bin/chandlery-make-data-dir chandlery-<n>-data-dir.service: create a missing dataDir
   bin/chandlery-set-property  key=value into a .properties file, nothing else touched
-  bin/chandlery-unpack        OCI layers -> a package dir (Nix builder and humans)
+  bin/chandlery-unpack        OCI layers -> a game tree (Nix builder now; humans with the templates)
   units/chandlery@.service    plain-systemd templates
   units/chandlery@.socket
   README.md                   running Chandlery on plain systemd
@@ -81,6 +83,11 @@ lays out on plain systemd — is the image's filesystem minus Debian:
 <pkg>/lib/chandlery/health        images/{bedrock,valheim}/health, if the game has one
 <pkg>/lib/chandlery/game.env      GAME=, <GAME>_VERSION=, CHANDLERY_READY=, CHANDLERY_STAGE=
 ```
+
+For Hytale (and Valheim) `opt/<game>` is a symlink to a separate derivation,
+`chandlery-<game>-game`, the tree unpacked from the image's layers: a change
+to the scripts around it rebuilds the small package, never gigabytes of
+assets.
 
 In the Nix packages, `bin/` and `lib/chandlery/` are `makeWrapper`s around the
 scripts from this repository's `images/<game>/`: they set the version variables
@@ -122,8 +129,9 @@ layer, thrown away on stop like one — and then runs the unchanged `prepare`.
 Hytale and Valheim only read their game dir, so for them `/opt/<game>` is a
 single symlink to the package. (`images/bedrock/prepare` gained one
 `chmod u+w` on the files it seeds, because a copy of a read-only store file is
-read-only: the one refactor this design needed in `images/`. In the image it
-changes nothing; `make test-base test-bedrock` pass.)
+read-only, and `images/hytale/run` a `find -H` where it looks for an AOT cache,
+because natively `/opt/hytale` is that symlink: the two refactors this design
+needed in `images/`. In the image they change nothing; the Docker tests pass.)
 
 ## The units
 
@@ -245,7 +253,7 @@ design, because a pattern that never matches means a healthy server killed at
 | Game | `CHANDLERY_READY` |
 |---|---|
 | Bedrock | `Server started\.` |
-| Hytale | to be taken from a live server's log (eldermarch) before Hytale ships |
+| Hytale | `Hytale Server Booted!` (0.7.4, after `Listening on …:<port>` and the universe loading; `tests/hytale-real.nix`) |
 | Valheim | `Game server connected` (to confirm against a live log) |
 
 `readyPattern = null` renders `Type=exec` and no pattern: for a game or mod
@@ -380,13 +388,14 @@ but my closure", and the store is world-readable on the host anyway.
 | Output | What |
 |---|---|
 | `packages.x86_64-linux.bedrock` | BDS from Mojang's zip (`fetchurl`, sha256 from `versions.json`, `-A chandlery/bedrock` as the image's fetch does), unzipped, the same two build leftovers dropped as `images/bedrock/fetch`, `autoPatchelfHook` for glibc/libstdc++ (and whatever else `autoPatchelf` reports). `meta.license = unfree`. |
-| `packages.x86_64-linux.hytale` | `/opt/hytale` unpacked from the published GHCR image's layers (below), run with `temurin-jre-bin-25` — 25.0.3, the JRE the image pins. Nothing is fetched from Hytale. |
+| `packages.x86_64-linux.hytale` | `/opt/hytale` unpacked from the published GHCR image's layers (below), run with `temurin-jre-bin-25` — 25.0.3, the JRE the image pins — with `curl` for the Treesinger mint. Nothing is fetched from Hytale. |
 | `packages.x86_64-linux.valheim` | `/opt/valheim` the same way, `autoPatchelf`'d (`libatomic`, `libpulseaudio`, `zlib`, `stdenv.cc.cc.lib`), `chandlery-a2s` for health. |
 | `packages.<sys>.chandlery-systemd` | the native tools (`systemd/`) — any Linux. |
 | `packages.<sys>.default` | `chandlery-systemd`. |
 | `overlays.default` | `pkgs.chandlery.{bedrock,hytale,valheim,systemd}` built with the consumer's `pkgs`. |
 | `nixosModules.default` / `.chandlery` | `services.chandlery`. |
-| `checks.x86_64-linux.*` | the packages, `go test` for `systemd/` and the probe, the VM tests. |
+| `checks.x86_64-linux.*` | the packages, `go test` for `systemd/` and the probe, the VM tests on fakes and real BDS. |
+| `legacyPackages.x86_64-linux.heavyChecks.*` | what needs gigabytes: `hytale` (the package) and `hytale-vm` (the real server). `nix build .#heavyChecks.hytale-vm`. |
 | `devShells.<sys>.default` | go, jq, curl, shellcheck, gnumake. |
 
 Systems: the games are x86_64-only (BDS, Valheim and the published images have
@@ -420,14 +429,24 @@ published image, **one `fetchurl` per layer**:
 - The layers are named by digest, so **an unchanged bucket is the same store
   path across versions** and is not downloaded again — the image's
   layer-by-churn dedupe carries straight over into the Nix store.
-- An ordinary (not fixed-output) derivation runs `chandlery-unpack --blobs` over
-  them in order: gunzip (or zstd), extract only `opt/<game>/`, honour `.wh.`
-  whiteouts, refuse absolute paths and `..`. Ownership and mtimes fall away in
-  the store, which is what the image normalised them for anyway.
+- An ordinary (not fixed-output) derivation, `chandlery-<game>-game`
+  (`nix/oci.nix`), runs `chandlery-unpack --blobs DEST opt/<game> BLOB…` over
+  them in order: tar's own gzip/zstd detection, only `opt/<game>/` extracted,
+  `.wh.` whiteouts and `.wh..wh..opq` opaque directories honoured as overlayfs
+  would, and a layer refused if it names an absolute path or `..` anywhere, or
+  leaves a link pointing out of the tree (which the next layer could write
+  through). Ownership and mtimes fall away in the store, which is what the
+  image normalised them for anyway; the tree is left readable by all.
 
-`chandlery-unpack` is the same script a plain-systemd user runs to install a
-package from GHCR (`chandlery-unpack ghcr.io/danielbodart/chandlery/bedrock:<tag>
-/opt/chandlery/bedrock-<tag>`), so the one unpacker is exercised by both.
+Measured for Hytale 0.7.4: 33 layers, 1.8 GB fetched, 4.1 GB and 68,860 files
+unpacked, the jar and `HytaleServer.aot.config` at `Server/` and the unzipped
+`Assets/`; fetch and unpack took about an hour here, nearly all of it GHCR's
+~0.5 MB/s per blob.
+
+`chandlery-unpack` is meant to be the same script a plain-systemd user runs
+to install a package from GHCR (a registry form,
+`chandlery-unpack ghcr.io/danielbodart/chandlery/hytale:<tag> DEST`, comes
+with the plain-systemd templates), so the one unpacker is exercised by both.
 
 Bedrock comes from Mojang's zip rather than the image because the zip is public
 and its sha256 is already what the image's build verifies: the Nix package and
@@ -453,16 +472,25 @@ the image are pinned by the same number.
 }
 ```
 
-`nix/update-versions` rewrites one entry with `jq`, keeping the file's key
-order and two-space indent so diffs stay one hunk per game:
+`nix/update-versions` rewrites one entry with `jq` (and `curl`, for the `oci`
+form), keeping the file's key order and two-space indent so diffs stay one hunk
+per game:
 
 ```
 nix/update-versions bedrock <version> <sha256>
 nix/update-versions oci hytale|valheim <image>@<digest> <version> [key=value…]
 ```
 
-The `oci` form fetches the manifest and config anonymously and derives
-`layers` itself. It leaves the file **unchanged** when only `digest`/`revision`
+The `oci` form fetches the manifest and config anonymously, checks the
+manifest hashes to the digest it was given (so the pin is that image, not
+whatever a tag says now), and derives `layers` itself: the config's history
+steps that are not `empty_layer` pair one to one with the manifest's layers
+(it refuses if the counts differ), and every layer whose step mentions
+`/opt/<game>` is kept — a step that merely mentions it costs a download, where
+one missed would lose part of the game. `revision` is the image's
+`org.opencontainers.image.revision` label. A multi-platform index resolves to
+its linux/amd64 image. `OCI_REGISTRY_URL` points it at a registry on disk for
+its tests. It leaves the file **unchanged** when only `digest`/`revision`
 moved but the version and `/opt` layers did not (a code-only image rebuild): the
 package would be byte-identical, and a new store path would make Tidewaiter
 restart a server for nothing.
@@ -514,6 +542,7 @@ services.chandlery.servers.<name> = {
   stopTimeout     = "5min";                            # str: TimeoutStopSec
   confine         = true;                              # bool: confinement (the escape hatch)
   treesinger.socket = null;                            # null or str; Hytale only (assertion)
+  treesinger.group  = "treesinger";                    # str: the group that may connect to it
   notify = {
     enable         = false;                            # bool
     appriseUrlFile = null;                             # null or str: file holding the Apprise URL (a sops secret)
@@ -569,16 +598,25 @@ branch, asks):
   `TREESINGER_URL` path is unchanged.
 - **Divergence from the contract's wording**: the mint happens *inside*
   `ExecStart` (in `run`, before it `exec`s Java), not in an `ExecStartPre`. An
-  `ExecStartPre` cannot set the environment `ExecStart` sees — systemd reads
-  `EnvironmentFile=` before the first command — and a session env file would
-  put the tokens on disk. Minting in `run` keeps Docker and systemd on the one
-  code path. Treesinger's design reached the same conclusion.
-- The unit gets `SupplementaryGroups=treesinger`, `BindReadOnlyPaths=-/run/treesinger`
+  `ExecStartPre` could do it — systemd re-reads `EnvironmentFile=` before
+  each command (Treesinger's design checked this on systemd 260) — but only by
+  writing the tokens to a file, which then has to be cleared on a failed mint
+  so a stale session is not reused. Minting in `run` keeps the tokens in the
+  game's environment alone and Docker and systemd on the one code path.
+  Treesinger's design recommends the same shape.
+- The unit gets `SupplementaryGroups=<treesinger.group>` (default
+  `treesinger`; the module declares the group, so a server can start before
+  Treesinger is installed), `BindReadOnlyPaths=-<the socket's directory>`
   (the directory, not the socket: a bind of the socket file pins an inode that
   goes stale when the broker restarts; `connect()` works through a read-only
   bind; `-` keeps the game booting unauthenticated if the broker is absent),
   `Environment=TREESINGER_SOCKET=<socket>`, and `wants`/`after`
-  `treesinger.service`.
+  `treesinger.service` (after it, so the session is minted at the first try;
+  wanted, not required, so the game still boots without it).
+- Under `PrivateUsers=yes` the `treesinger` group is unmapped in the server's
+  user namespace (it shows as `nogroup`), but the socket's permission check is
+  on the real gid, so `connect()` succeeds — measured in `tests/hytale.nix`
+  with a 0660 socket in a 0750 directory, as Treesinger's module makes them.
 
 **Portical.** Not a dependency. Chandlery exposes `ports`; to forward them:
 
@@ -693,12 +731,35 @@ operator's own `server.properties` (its other keys kept) and bound by BDS;
 `Quit correctly` and exits cleanly within the timeout; a restart reuses the
 world. The RakNet health probe is not checked: see Open questions 11.
 
-**`nix/tests/hytale.nix`** — the real adapter on fake `java` and a fake
-Treesinger (a unix-socket HTTP server in the VM answering `/v1/session`):
-tokens arrive in the environment and not on argv; broker absent → boots
-unauthenticated with the warning; `--bind 0.0.0.0:<port>` present; the
-supplementary group works under `PrivateUsers`. A gated `hytale-real` check
-boots the real package to `READY` where disk allows.
+**`nix/tests/hytale.nix`** — the real adapter (`images/hytale/{run,prepare,
+stop-hook}`, wrapped as `packages.hytale` wraps them) on
+`test/fixtures/fake-hytale/java`, the Docker adapter tests' fake, and a fake
+Treesinger (a unix-socket HTTP server in the VM, run as Treesinger's module
+runs it: its own user, a 0660 socket in a 0750 runtime directory). Two
+servers: Dan's eldermarch shape (static user, existing tree, pinned
+machine-id, `treesinger.socket`, notify) and all defaults. Checked: `Type=notify`
+on a given pattern and `Type=exec` on the default; the session minted over the
+socket through the `treesinger` group under `PrivateUsers=yes`, its tokens in
+the game's `/proc/<pid>/environ` and not its cmdline; `--bind 0.0.0.0:5520` /
+`:5521`; the per-server machine-id and only the broker's directory inside, and
+neither in the default server; broker gone → the warning and an
+unauthenticated boot, still active; the console; loggifly's Hytale join/leave
+rules through Apprise; stop types `/stop` and the save precedes the exit, with
+`Result=success`; `systemd-analyze security` 1.4 (the supplementary group
+costs 0.1), under the 1.5 ceiling.
+
+**`nix/tests/hytale-real.nix`** (`heavyChecks.hytale-vm`, not in `checks`) —
+the real package from GHCR in the confined unit, as `dan`, with
+`--auth-mode offline` (no internet in the VM): ready on `Hytale Server
+Booted!` (~30 s, 6 GB VM), listening on the port it is given and not 5520, no
+"Failed to get hardware UUID" with `machineIdFile` set, the console answers
+`/help`, and `/stop` logs "Shutdown completed!" and exits with
+`Result=success` in under a second. Seen along the way: without
+`machineIdFile` the confined server has no `/etc/machine-id` and logs
+`Failed to get hardware UUID for Linux - all methods failed` (it boots
+anyway; its encrypted auth store then falls back, so set `machineIdFile`, as
+compose bound one); and its QUIC transport asks for a larger
+`net.core.rmem_max` than the default — a host sysctl, the deployer's call.
 
 **`nix/tests/valheim.nix`** — the adapter on `fake-valheim`: `-port`,
 password from `environmentFiles` and absent from argv, stop by `SIGINT` saves.
@@ -713,8 +774,10 @@ password from `environmentFiles` and absent from argv, stop by `SIGINT` saves.
    and the `oci` form of `update-versions` come with Hytale.
 3. ✓ The module and `tests/module.nix`, then `tests/bedrock.nix`. **Bedrock
    done.**
-4. `TREESINGER_SOCKET` in `images/hytale/run` (+ its Docker test),
-   `packages.hytale`, `tests/hytale.nix`.
+4. ✓ `chandlery-unpack`, `nix/oci.nix`, the `oci` form of `update-versions`,
+   `TREESINGER_SOCKET` in `images/hytale/run` (+ its Docker tests),
+   `packages.hytale`, `treesinger.socket`, `tests/hytale.nix`,
+   `tests/hytale-real.nix`. **Hytale done.**
 5. `packages.valheim`, `tests/valheim.nix`.
 6. CI: versions bump in the three workflows, the `nix` job.
 7. Plain-systemd templates, `make install-systemd`, `tests/template.nix`,
@@ -722,16 +785,15 @@ password from `environmentFiles` and absent from argv, stop by `SIGINT` saves.
 
 ## Open questions
 
-1. **Readiness lines for Hytale and Valheim** need confirming from live logs
-   (Dan's eldermarch for Hytale). Until then their default could be `null`
-   (`Type=exec`) rather than a guess that kills a healthy server at
-   `TimeoutStartSec`. Proposed: ship Hytale/Valheim with `null` unless
-   confirmed.
-2. **`PrivateUsers=yes` and `SupplementaryGroups=treesinger`.** In a user
-   namespace that maps only the unit's user and group, setting an unmapped
-   supplementary group may fail or be dropped. If the VM test shows that,
-   Hytale-with-Treesinger uses `PrivateUsers=identity` (systemd 257+, maps
-   0–65535 to themselves, still no capabilities on the host).
+1. **Readiness line for Valheim** needs confirming from a live log; until
+   then its default could be `null` (`Type=exec`) rather than a guess that
+   kills a healthy server at `TimeoutStartSec`. Hytale's is settled:
+   `Hytale Server Booted!`, printed by the real 0.7.4 server in
+   `tests/hytale-real.nix` 28 s into boot, after it is listening.
+2. ~~**`PrivateUsers=yes` and `SupplementaryGroups=treesinger`.**~~ Settled:
+   works. The group is unmapped in the server's user namespace, but the
+   socket's permission check is on the real gid; `tests/hytale.nix` mints
+   through it (as Treesinger's own VM test found). No `PrivateUsers=identity`.
 3. ~~**BDS and the symlinked `/opt/bedrock`.**~~ Settled: BDS works from its
    cwd, not `/proc/self/exe`. In the Bedrock VM test it reads the operator's
    `/data/server.properties` through the staged link (its `online-mode=false`,
