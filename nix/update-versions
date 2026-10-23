@@ -1,0 +1,52 @@
+#!/bin/sh
+# Rewrite one game's pin in nix/versions.json: what CI runs in the workflow
+# that has just published that game's image, and what a human runs to pin by
+# hand. The Nix packages build exactly what this file says.
+#
+#   nix/update-versions bedrock VERSION SHA256
+#
+# Bedrock's pin is Mojang's zip and its sha256 — the same number the image's
+# build verifies, so the image and the Nix package are pinned together.
+#
+# Only jq: CI needs no Nix to bump a version. The file keeps its key order and
+# two-space indent, so a bump is one hunk per game; an unchanged pin leaves the
+# file byte-for-byte as it was (and the exit status says nothing changed: 0
+# either way).
+set -eu
+
+usage() {
+    echo "usage: nix/update-versions bedrock VERSION SHA256" >&2
+    exit 64
+}
+
+file=${VERSIONS_JSON:-$(dirname "$0")/versions.json}
+[ -f "$file" ] || { echo "update-versions: no $file" >&2; exit 66; }
+[ "$#" -ge 1 ] || usage
+
+game=$1; shift
+case "$game" in
+    bedrock)
+        [ "$#" -eq 2 ] || usage
+        version=$1 sha256=$2
+        case "$version" in
+            [0-9]*.[0-9]*) ;;
+            *) echo "update-versions: [$version] is not a Bedrock version" >&2; exit 65 ;;
+        esac
+        printf '%s' "$sha256" | grep -qxE '[0-9a-f]{64}' \
+            || { echo "update-versions: [$sha256] is not a sha256 in hex" >&2; exit 65; }
+        # shellcheck disable=SC2016 # jq's variables, not the shell's
+        filter='.bedrock = { version: $version, sha256: $sha256 }'
+        set -- --arg version "$version" --arg sha256 "$sha256"
+        ;;
+    *) usage ;;
+esac
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+jq --indent 2 "$@" "$filter" "$file" > "$tmp"
+if cmp -s "$tmp" "$file"; then
+    echo "update-versions: $game unchanged"
+else
+    cat "$tmp" > "$file"
+    echo "update-versions: $game $version"
+fi
