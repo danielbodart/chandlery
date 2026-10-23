@@ -27,7 +27,9 @@ For a server called `<name>`:
 `systemctl stop chandlery@<name>` types the game's own save-and-quit at its
 console (Bedrock's `stop`, Hytale's `/stop`) and waits up to five minutes for
 it to exit. Valheim saves on `SIGINT`, so that is the signal it gets. It is
-`docker stop` with the image's stop hook, under systemd.
+`docker stop` with the image's stop hook, under systemd. A server already gone
+(told `stop` at its console, say) gets nothing typed at it, and stays stopped
+until it is started.
 
 ## Install
 

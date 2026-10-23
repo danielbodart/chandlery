@@ -459,11 +459,12 @@ let
             "-/etc/localtime"
             "-/etc/zoneinfo"
             "-/etc/ssl/certs/ca-certificates.crt"
-            # Its own user's entry, as the image's /etc/passwd has it: Unity
+            # Its own user's entry, as the image's /etc/passwd has it, and no
+            # one else's (chandlery-<name>-data-dir writes them): Unity
             # (Valheim) dereferences getpwuid(getuid()) unchecked, and segfaults
             # without one.
-            "-/etc/passwd"
-            "-/etc/group"
+            "${run}/etc/passwd:/etc/passwd"
+            "${run}/etc/group:/etc/group"
           ]
           ++ lib.optional (s.machineIdFile != null) "${s.machineIdFile}:/etc/machine-id"
           # The directory, not the socket: a bind of the socket would pin the
@@ -544,21 +545,45 @@ let
   # Its own unit, not an ExecStartPre=+: systemd sets up the server's mount
   # namespace (which binds dataDir) even for a privileged ExecStartPre, so the
   # directory has to exist before the server's unit starts at all.
-  dataDirFor = name: s: {
-    description = "Chandlery ${s.game} server ${name}: data directory";
-    unitConfig.RequiresMountsFor = [ s.dataDir ];
-    serviceConfig = {
-      Type = "oneshot";
-      RemainAfterExit = true;
-      ExecStart = "${cfg.tools}/bin/chandlery-make-data-dir ${
-        escapeSystemdExecArgs [
-          s.dataDir
-          s.user
-          s.group
+  # The confined server's /etc/passwd and /etc/group are written here too,
+  # as root and from the host's databases: its own user and groups only, home
+  # at /data, as the image's are.
+  dataDirFor =
+    name: s:
+    let
+      groups = [ s.group ] ++ lib.optional (s.treesinger.socket != null) s.treesinger.group;
+      identity = pkgs.writeShellScript "chandlery-${name}-identity" ''
+        set -euo pipefail
+        etc=${lib.escapeShellArg "${runDir name}/etc"}
+        mkdir -p "$etc"
+        umask 0022
+        ${pkgs.getent}/bin/getent passwd ${lib.escapeShellArg s.user} \
+          | ${pkgs.gawk}/bin/awk -F: -v OFS=: '{ $6 = "/data"; print }' > "$etc/passwd.new"
+        for g in ${lib.escapeShellArgs groups}; do
+          ${pkgs.getent}/bin/getent group "$g" | ${pkgs.gawk}/bin/awk -F: -v OFS=: '{ print $1, "x", $3, "" }'
+        done > "$etc/group.new"
+        mv "$etc/passwd.new" "$etc/passwd"
+        mv "$etc/group.new" "$etc/group"
+      '';
+    in
+    {
+      description = "Chandlery ${s.game} server ${name}: data directory";
+      unitConfig.RequiresMountsFor = [ s.dataDir ];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = [
+          "${cfg.tools}/bin/chandlery-make-data-dir ${
+            escapeSystemdExecArgs [
+              s.dataDir
+              s.user
+              s.group
+            ]
+          }"
         ]
-      }";
+        ++ lib.optional s.confine identity;
+      };
     };
-  };
 
   socketFor = name: s: {
     description = "Chandlery ${s.game} server ${name}: console";
@@ -572,6 +597,8 @@ let
       SocketMode = "0600";
       DirectoryMode = "0755";
       RemoveOnStop = true;
+      # A line the server never read is not left for the next one.
+      FlushPending = true;
     };
   };
 
@@ -690,7 +717,29 @@ in
       ++ lib.mapAttrsToList (name: s: {
         assertion = s.notify.enable -> s.notify.appriseUrlFile != null;
         message = "services.chandlery.servers.${name}.notify.enable needs notify.appriseUrlFile.";
-      }) servers;
+      }) servers
+      ++ (
+        # Each Valheim server also takes port + 1, and each Bedrock one portv6:
+        # two servers apart is easy to miss, and found only when one cannot bind.
+        let
+          clashes = lib.filter (p: lib.length p.servers > 1) (
+            lib.mapAttrsToList
+              (port: names: {
+                inherit port;
+                servers = lib.unique names;
+              })
+              (
+                lib.zipAttrs (
+                  lib.concatLists (lib.mapAttrsToList (name: s: map (p: { ${p} = name; }) s.ports) servers)
+                )
+              )
+          );
+        in
+        map (c: {
+          assertion = false;
+          message = "services.chandlery.servers: ${lib.concatStringsSep ", " c.servers} all listen on ${c.port}.";
+        }) clashes
+      );
 
     environment.systemPackages = [ cfg.tools ];
 

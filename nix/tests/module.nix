@@ -162,6 +162,8 @@ in
         assert "No such file" in p["srv"] or p["srv"] == "", p
         assert p["home"] == "" or "No such file" in p["home"] or "Permission denied" in p["home"], p
         assert p["machine-id"] == "0123456789abcdef0123456789abcdef", p
+        assert p["passwd"] == f"gamer:x:{uid}:100::/data:" + machine.succeed("getent passwd gamer").strip().split(":")[6], p
+        assert p["group"] == "users:x:100:", p
         assert p["cwd"] == "/opt/bedrock /data/worlds", p
         closure = int(p["store"])
         assert closure < 100, f"{closure} store paths visible"
@@ -185,6 +187,18 @@ in
     with subtest("a write to a stopped server's console does not start it"):
         machine.fail("chandlery-console alpha say anyone")
         machine.fail("systemctl is-active chandlery-alpha.service")
+
+    with subtest("told to stop at its console, it stays stopped"):
+        before = journal("alpha")
+        machine.succeed("systemctl start chandlery-alpha.service")
+        machine.succeed("chandlery-console alpha stop")
+        machine.wait_until_fails("systemctl is-active chandlery-alpha.service")
+        machine.sleep(15)
+        machine.fail("systemctl is-active chandlery-alpha.service")
+        log = journal("alpha")[len(before):]
+        assert log.count("Server started.") == 1, log
+        assert "server has already exited" in log, log
+        machine.succeed("systemctl stop chandlery-alpha.socket")
 
     with subtest("a crash restarts it"):
         machine.succeed("systemctl start chandlery-alpha.service")

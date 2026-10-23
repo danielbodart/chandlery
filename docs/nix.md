@@ -118,7 +118,7 @@ its own directory (Bedrock) and `link` for one that does not.
 | `/etc/machine-id` | `machineIdFile`, when set | ro |
 | `/run/treesinger` | itself, when `treesinger.socket` is set, `-`optional | ro |
 | `/etc/{resolv.conf,hosts,nsswitch.conf,localtime}`, `/etc/ssl/certs/ca-certificates.crt` | host / `cacert` | ro |
-| `/etc/{passwd,group}` | host | ro — Unity (Valheim) dereferences `getpwuid(getuid())` unchecked and segfaults without its user's entry, found by `tests/valheim-real.nix`; the image has one too |
+| `/etc/{passwd,group}` | `/run/chandlery/<name>/etc/`, written by `chandlery-<name>-data-dir` from the host's entries | ro — just the server's own user (home `/data`) and groups, no other account. Unity (Valheim) dereferences `getpwuid(getuid())` unchecked and segfaults without its user's entry, found by `tests/valheim-real.nix`; the image has one too |
 | `/nix/store/...` | the unit's closure (`confinement.mode = "full-apivfs"`) | ro |
 | `/proc`, `/sys`, `/dev`, `/tmp` | API VFS, `PrivateTmp`, `PrivateDevices` | — |
 
@@ -588,6 +588,7 @@ Several servers of one game on one host need distinct ports, which natively
 means distinct *server* ports (there is no host-side remap): Dan's four Hytale
 servers become `port = 5520 … 5523`. Bedrock's `portv6` defaults to `port + 1`,
 so two Bedrock servers want ports two apart (19132/19133, 19134/19135).
+An assertion fails the build when two servers' `ports` overlap, naming them.
 
 `extraArgs` default: `[ ]` for Bedrock and Hytale; for Valheim the image's
 `CMD`, `[ "-name" "<name>" "-world" "Dedicated" "-public" "1" ]`. The module

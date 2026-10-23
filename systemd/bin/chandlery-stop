@@ -10,6 +10,11 @@
 # journal. With PrivatePIDs=yes this command cannot see the game's PID, so the
 # lock is how it knows; the hook gets no PID argument natively.
 #
+# A game that has already exited — told `stop` at its console, say — gets
+# nothing typed at it: the line would wait in the FIFO, and the socket, still
+# listening, would start a new server to read it and quit again, round and
+# round. The lock is free exactly when the game is gone.
+#
 # No hook, or a hook that fails: return at once, and systemd sends KillSignal
 # (SIGINT) — as the entrypoint fell back to a signal. TimeoutStopSec bounds the
 # wait, as Docker's stop_grace_period did.
@@ -21,6 +26,11 @@ log() { printf '[chandlery] %s\n' "$*" >&2; }
 pkg=$1
 hook="$pkg/lib/chandlery/stop"
 : "${CHANDLERY_LOCK:?CHANDLERY_LOCK is not set}"
+
+if flock -n "$CHANDLERY_LOCK" true; then
+    log "server has already exited"
+    exit 0
+fi
 
 if [ ! -x "$hook" ]; then
     log "no stop hook; stopping with the kill signal"

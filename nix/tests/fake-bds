@@ -38,6 +38,8 @@ while :; do
             echo "probe: home=$(ls /home 2>&1 | tr '\n' ' ')"
             echo "probe: srv=$(ls /srv 2>&1 | tr '\n' ' ')"
             echo "probe: machine-id=$(cat /etc/machine-id 2>&1)"
+            echo "probe: passwd=$(tr '\n' ' ' < /etc/passwd)"
+            echo "probe: group=$(tr '\n' ' ' < /etc/group)"
             echo "probe: pid1=$(cat /proc/1/comm)"
             echo "probe: pids=$(ls -d /proc/[0-9]* | wc -l)"
             echo "probe: store=$(ls /nix/store | wc -l)"

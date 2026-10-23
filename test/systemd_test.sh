@@ -180,8 +180,18 @@ fi
 
 it "returns the hook's failure, for the kill signal"
 printf '#!/bin/sh\nexit 5\n' > "$stoppkg/lib/chandlery/stop"
+flock "$CHANDLERY_LOCK" sleep 1 &
+holder=$!
+sleep 0.3
 code=0; chandlery-stop "$stoppkg" 2>/dev/null || code=$?
+wait "$holder"
 assert_equals 5 "$code" && pass
+
+it "types nothing at a server that has already exited"
+printf '#!/bin/sh\necho ran > "%s/hook.log"\n' "$work" > "$stoppkg/lib/chandlery/stop"
+rm -f "$work/hook.log"
+chandlery-stop "$stoppkg" 2>/dev/null
+if [ -e "$work/hook.log" ]; then fail "the hook ran"; else pass; fi
 
 # ---- chandlery-make-data-dir ----
 
@@ -328,6 +338,8 @@ mkdir -p "$work/opt2"
 CHANDLERY_OPT="$work/opt2" chandlery-prepare "$p" 2>/dev/null
 mkfifo "$work/console2"
 ( read -r line < "$work/console2"; echo "$line" > "$work/typed" ) &
+flock "$CHANDLERY_LOCK" sleep 1 &
+sleep 0.3
 CHANDLERY_CONSOLE="$work/console2" chandlery-stop "$p" 2>/dev/null
 wait
 assert_equals "$p/opt/bedrock" "$(readlink -f "$work/opt2/bedrock/server" | xargs dirname)" \
