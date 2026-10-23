@@ -30,6 +30,7 @@ flake.nix, flake.lock         packages, overlay, module, checks, devShell
 nix/
   versions.json               the pin: what each package builds, bumped by CI
   update-versions             sh+jq: rewrites one game's entry (CI and humans)
+  push-pin                    CI: update-versions, commit, push to master (retrying a lost race)
   oci.nix                     fetch layers from GHCR by digest, unpack a subtree
   pkgs/
     bedrock.nix               Mojang zip -> autoPatchelf'd package
@@ -46,7 +47,9 @@ nix/
     fake-hytale.nix           a Hytale-shaped package: the real adapter on test/fixtures/fake-hytale/java
     hytale.nix                VM: hytale adapter on fake java + fake Treesinger
     hytale-real.nix           VM: the real Hytale server (heavyChecks, not checks)
+    fake-valheim.nix          a Valheim-shaped package: the real adapter on test/fixtures/fake-valheim
     valheim.nix               VM: valheim adapter on test/fixtures/fake-valheim
+    valheim-real.nix          VM: the real Valheim server (heavyChecks, not checks)
     template.nix              VM: the plain-systemd template units, no module
 systemd/
   go.mod                      github.com/danielbodart/chandlery/systemd (no deps)
@@ -57,9 +60,10 @@ systemd/
   bin/chandlery-prepare       ExecStartPre: stage /opt, run package prepare, set keys
   bin/chandlery-make-data-dir chandlery-<n>-data-dir.service: create a missing dataDir
   bin/chandlery-set-property  key=value into a .properties file, nothing else touched
-  bin/chandlery-unpack        OCI layers -> a game tree (Nix builder now; humans with the templates)
+  bin/chandlery-unpack        an image -> a package (plain systemd); OCI layers -> a game tree (Nix builder)
   units/chandlery@.service    plain-systemd templates
   units/chandlery@.socket
+  units/chandlery.sysusers    the `chandlery` user they run as
   README.md                   running Chandlery on plain systemd
 docs/nix.md                   this file
 ```
@@ -114,6 +118,7 @@ its own directory (Bedrock) and `link` for one that does not.
 | `/etc/machine-id` | `machineIdFile`, when set | ro |
 | `/run/treesinger` | itself, when `treesinger.socket` is set, `-`optional | ro |
 | `/etc/{resolv.conf,hosts,nsswitch.conf,localtime}`, `/etc/ssl/certs/ca-certificates.crt` | host / `cacert` | ro |
+| `/etc/{passwd,group}` | host | ro — Unity (Valheim) dereferences `getpwuid(getuid())` unchecked and segfaults without its user's entry, found by `tests/valheim-real.nix`; the image has one too |
 | `/nix/store/...` | the unit's closure (`confinement.mode = "full-apivfs"`) | ro |
 | `/proc`, `/sys`, `/dev`, `/tmp` | API VFS, `PrivateTmp`, `PrivateDevices` | — |
 
@@ -254,7 +259,7 @@ design, because a pattern that never matches means a healthy server killed at
 |---|---|
 | Bedrock | `Server started\.` |
 | Hytale | `Hytale Server Booted!` (0.7.4, after `Listening on …:<port>` and the universe loading; `tests/hytale-real.nix`) |
-| Valheim | `Game server connected` (to confirm against a live log) |
+| Valheim | `Opened (Steam\|PlayFab) server` (1.0.20: printed once the world is loaded or generated and the socket is open, 20–90 s in; PlayFab's under `-crossplay`, from the game's strings, not yet seen live). Not `Game server connected`: that waits on Steam's backend, and was still `… failed` 50 s into a live run on a reloaded world, and never comes offline. `tests/valheim-real.nix` is ready on it with no internet. |
 
 `readyPattern = null` renders `Type=exec` and no pattern: for a game or mod
 whose boot line is unknown.
@@ -389,13 +394,14 @@ but my closure", and the store is world-readable on the host anyway.
 |---|---|
 | `packages.x86_64-linux.bedrock` | BDS from Mojang's zip (`fetchurl`, sha256 from `versions.json`, `-A chandlery/bedrock` as the image's fetch does), unzipped, the same two build leftovers dropped as `images/bedrock/fetch`, `autoPatchelfHook` for glibc/libstdc++ (and whatever else `autoPatchelf` reports). `meta.license = unfree`. |
 | `packages.x86_64-linux.hytale` | `/opt/hytale` unpacked from the published GHCR image's layers (below), run with `temurin-jre-bin-25` — 25.0.3, the JRE the image pins — with `curl` for the Treesinger mint. Nothing is fetched from Hytale. |
-| `packages.x86_64-linux.valheim` | `/opt/valheim` the same way, `autoPatchelf`'d (`libatomic`, `libpulseaudio`, `zlib`, `stdenv.cc.cc.lib`), `chandlery-a2s` for health. |
+| `packages.x86_64-linux.valheim` | `/opt/valheim` the same way (32 of 45 layers, 1.9 GB, 1.0.20), `autoPatchelf`'d in the unpacking derivation itself, so 2 GB is not stored twice: libstdc++/libgcc_s and zlib, and `libpulseaudio`, which PlayFab Party's `libparty.so` links (why the image installs `libpulse0`). Unity's Wayland decoration plugin (`libdecor-cairo.so`) is left with its GUI libraries unresolved: a headless server never loads it. The image's `libatomic1` is on `LD_LIBRARY_PATH`, as nothing links it. `chandlery-a2s` for health, the image's `game-version` alongside. |
+| `packages.x86_64-linux.chandlery-a2s` | Valheim's A2S probe, from `images/valheim/probe`, its tests run at build as the image's build runs them. |
 | `packages.<sys>.chandlery-systemd` | the native tools (`systemd/`) — any Linux. |
 | `packages.<sys>.default` | `chandlery-systemd`. |
 | `overlays.default` | `pkgs.chandlery.{bedrock,hytale,valheim,systemd}` built with the consumer's `pkgs`. |
 | `nixosModules.default` / `.chandlery` | `services.chandlery`. |
-| `checks.x86_64-linux.*` | the packages, `go test` for `systemd/` and the probe, the VM tests on fakes and real BDS. |
-| `legacyPackages.x86_64-linux.heavyChecks.*` | what needs gigabytes: `hytale` (the package) and `hytale-vm` (the real server). `nix build .#heavyChecks.hytale-vm`. |
+| `checks.x86_64-linux.*` | the packages, `go test` for `systemd/` and the probe, `versions` (the shell tests of `update-versions` and `push-pin`), the VM tests on fakes (`module`, `hytale-vm`, `valheim-vm`, `template-vm`) and real BDS (`bedrock-vm`). |
+| `legacyPackages.x86_64-linux.heavyChecks.*` | what needs gigabytes: `hytale` and `valheim` (the packages), `hytale-vm` and `valheim-vm` (the real servers). `nix build .#heavyChecks.valheim-vm`. |
 | `devShells.<sys>.default` | go, jq, curl, shellcheck, gnumake. |
 
 Systems: the games are x86_64-only (BDS, Valheim and the published images have
@@ -465,7 +471,7 @@ the image are pinned by the same number.
     "layers": [ "sha256:…", "…" ]
   },
   "valheim": {
-    "version": "0.221.12", "buildId": "…", "manifestGid": "…",
+    "version": "1.0.20", "buildId": "25909431", "manifestGid": "4001404753685205688",
     "image": "ghcr.io/danielbodart/chandlery/valheim",
     "digest": "sha256:…", "revision": "…", "layers": [ "…" ]
   }
@@ -497,26 +503,40 @@ restart a server for nothing.
 
 ### CI
 
-Each game's workflow gains a final step in the run that published the image,
-after `docker push`:
+Each game's workflow ends, in the run that published the image and only on
+`master`, with a step `Pin it in nix/versions.json`:
 
-- **bedrock.yml**: `nix/update-versions bedrock "$VERSION" "$SHA256"` — the
-  sha256 it already computed for the build-arg.
-- **hytale.yml / valheim.yml**: the pushed digest from `docker inspect
-  --format '{{index .RepoDigests 0}}'`, then `nix/update-versions oci …`.
+- **bedrock.yml**: `nix/push-pin bedrock "$VERSION" "$SHA256"` — the sha256 it
+  already computed for the build-arg.
+- **hytale.yml / valheim.yml**: the build step outputs the version and the
+  pushed reference, `docker inspect --format '{{index .RepoDigests 0}}'`, and
+  the pin step runs `nix/push-pin oci hytale "$REF" "$VERSION"` (Valheim adds
+  `buildId=` and `manifestGid=` from its resolve job). Hytale's is a step of its
+  own, without the downloader token in its environment, and is skipped when
+  the build step found the image already published.
 
-then commits as `<game>: <version> in nix/versions.json` and pushes to
-`master`, looping on a lost race: `fetch`, `reset --hard origin/master`, re-run
-`update-versions`, commit, `push` — three workflows can finish together, and
-re-applying is cheaper and safer than merging JSON. Needs `contents: write` on
-those jobs. A push made with `GITHUB_TOKEN` starts no workflow, so this cannot
-loop.
+`nix/push-pin` takes `update-versions`' own arguments, and per attempt runs:
+`fetch`, `reset --hard FETCH_HEAD`, `update-versions` (as it is on `master`
+now), commit `<Game>: <version> in nix/versions.json`, `push`. The three
+workflows can finish together, and re-applying on top of the winner is cheaper
+and safer than merging JSON; five attempts, then exit 75. An unchanged pin (a
+code-only rebuild) pushes nothing. The script is one function called on its
+last line, because the reset can rewrite the file `sh` is reading. The jobs get
+`contents: write` (Hytale's single job at the workflow level) and commit as
+`github-actions[bot]`. A push made with `GITHUB_TOKEN` starts no workflow, so
+this cannot loop. It also means CI does not run on a pin; see `nix.yml` below.
+`test/versions_test.sh` drives it against a bare repository: a push, an
+unchanged pin, a re-apply on top of another workflow's pin, a refused push
+retried, and giving up.
 
-`ci.yml` gains a `nix` job (`DeterminateSystems/nix-installer-action`, KVM is
-available on `ubuntu-latest`): `nix flake check`, which builds the packages and
-runs the VM tests. The Hytale/Valheim checks that need their 1.8 GB/1 GB of
-layers are a separate, non-blocking job (disk on the free runner is the
-constraint — see Open questions); the fake-game VM tests always run.
+`ci.yml` gains a `nix` job: `/dev/kvm` opened to the runner's user by a udev
+rule, `cachix/install-nix-action@v31` with `system-features = nixos-test
+benchmark big-parallel kvm`, then `nix flake check -L`, which builds the
+packages and runs every VM test but the real Hytale and Valheim. Those are
+`nix.yml`: weekly and on demand, a matrix of `nix build
+.#heavyChecks.{hytale,valheim}-vm` after freeing the runner's disk of the
+toolchains it never uses. Because pins pushed by CI start no workflow, the
+weekly run is what catches a pin whose package no longer builds or boots.
 
 ## NixOS module: `services.chandlery`
 
@@ -671,19 +691,55 @@ services.chandlery.servers.hytale-eldermarch = {
 
 `systemd/units/chandlery@.{service,socket}` carry the same directives, with
 `%i` for `<n>` and fixed conventions where systemd cannot expand variables in
-paths: the package at `/opt/chandlery/%i` (a symlink, i.e. a profile by another
-name — repoint it to upgrade), state in `StateDirectory=chandlery/%i`
-(`/var/lib/chandlery/%i`), user `chandlery`. Per-server settings go in a
-drop-in (`systemctl edit chandlery@wrlin`): `User=`, `Environment=
-CHANDLERY_ARGS=…`, `Environment=CHANDLERY_SET=server-port=19134 …`. Instead of
-the Nix closure, the template mounts `/usr`, `/etc/ssl`, the package and its
-own state, with `TemporaryFileSystem=` over `/var/lib/chandlery`, `/srv`,
-`/home` and `/mnt` so no other world is visible. `make install-systemd
-PREFIX=/usr/local` installs the tools and templates; `systemd/README.md`
-documents the three-command setup (install, `chandlery-unpack`, `systemctl
-enable --now chandlery@<n>.socket chandlery@<n>.service`). Hytale wants a Java
-25 on the host and Valheim `libatomic1 libpulse0`, as the images install. A VM
-test runs the templates without the module, on the fake game.
+paths:
+
+- the package at `/var/lib/chandlery-packages/%i`, usually a symlink to one
+  version's directory (a profile by another name: repoint it to upgrade, back
+  to roll back). Not `/opt/chandlery/%i`, as this design first had it: inside
+  the unit `/opt` is the staging tmpfs, which would hide it;
+- state in `StateDirectory=chandlery/%i` (`/var/lib/chandlery/%i`), bound at
+  `/data`; user and group `chandlery` (`units/chandlery.sysusers`);
+- settings in an optional `/etc/chandlery/%i.env`: `CHANDLERY_ARGS` (split on
+  spaces into the game's arguments) and `CHANDLERY_SET` (space-separated
+  `KEY=VALUE`s that `chandlery-prepare` sets in the properties file), plus the
+  game's own variables (`VALHEIM_PASSWORD`, `TREESINGER_SOCKET`). The package's
+  `game.env` is read before it, so a package's default `CHANDLERY_ARGS` (the
+  image's `CMD`) is replaced, not appended to, as compose's `command:` replaces
+  `CMD`. `User=`, other binds and Treesinger's group go in a drop-in.
+
+There is no Nix closure to confine to, so the template keeps the module's
+hardening and hides what matters: `ProtectSystem=strict` and `ProtectHome=`,
+`TemporaryFileSystem=/var/lib/chandlery:ro` (every other server's world; its own
+is bound back over it) and `InaccessiblePaths=-/srv -/mnt -/media`.
+`systemd-analyze security` puts it at 1.4 (systemd 260), held under 1.5 by
+`tests/template.nix`. A template server's ready line is its package's: to
+change it, override `ExecStart=` in a drop-in.
+
+A package for the templates comes from `chandlery-unpack IMAGE DEST`: the
+registry form fetches the image's manifest and config anonymously, keeps the
+layers whose history step writes `/opt/<game>` or `/usr/local/{bin,lib/chandlery}`,
+checks each against its digest, unpacks the two subtrees with the `--blobs`
+form, and moves them into the package layout: `/usr/local/bin/<game>-server` to
+`bin/`, `lib/chandlery/*` as they are, the base's `console.sh` and the probes to
+`libexec/chandlery/`, with the scripts' `/usr/local/...` paths rewritten to
+the package's. `game.env` is written from the image's `ENV` (less `PATH`,
+`JAVA_HOME`, `LANG` and `CHANDLERY_USER`, which describe its Debian), the
+game's `CHANDLERY_READY`/`CHANDLERY_STAGE`/`CHANDLERY_PROPERTIES` from a table in
+the script (the same values as `nix/pkgs/<game>.nix`), the `CMD`'s arguments as
+`CHANDLERY_ARGS`, and the reference it came from. Valheim's stop hook is
+dropped, as in its Nix package. Against GHCR, `bedrock:latest` took 30 s and
+came out with `mc-monitor` in `libexec` and the health probe pointing at it.
+`chandlery-stop` now puts the package's `libexec/chandlery` first on the stop
+hook's `PATH`, so the hook's `chandlery-console stop` is the image's console.sh
+and not the host's `<name>` form. `chandlery-console <name>` follows either
+unit name's journal.
+
+`make install-systemd` (`PREFIX=/usr/local`, `DESTDIR` for packagers) builds the
+two Go helpers and installs them, `systemd/bin/*`, console.sh, the templates
+with `@bindir@` filled in, and the sysusers file. The Nix package of the tools
+carries the templates too, in `share/chandlery/systemd`. `systemd/README.md`
+is the guide. Hytale wants a Java 25 on systemd's `PATH`, and Valheim
+`libatomic1 libpulse0`, as the images install.
 
 ## Test plan
 
@@ -761,10 +817,39 @@ anyway; its encrypted auth store then falls back, so set `machineIdFile`, as
 compose bound one); and its QUIC transport asks for a larger
 `net.core.rmem_max` than the default — a host sysctl, the deployer's call.
 
-**`nix/tests/valheim.nix`** — the adapter on `fake-valheim`: `-port`,
-password from `environmentFiles` and absent from argv, stop by `SIGINT` saves.
+**`nix/tests/valheim.nix`** — the adapter on `fake-valheim` (built from
+`test/fixtures/fake-valheim`, which ignores `SIGTERM` and saves only on
+`SIGINT`), two servers: Dan's shape (static user, `port = 2466`, its own flags,
+a password in an `environmentFiles` file, `openFirewall`) and all defaults.
+Checked: `Type=notify` on a given pattern; the adapter's
+`-nographics -batchmode -savedir /data -password …` then `-port` then
+`extraArgs`, and the image's `CMD` named after the server by default; the
+password in the game's arguments (where Valheim takes it) and nowhere in the
+unit; `steamclient.so` linked under `/data/.steam/sdk64` as the server's user;
+both ports in the firewall; the package's A2S health probe; stop with no hook,
+by `SIGINT`, saving, never `SIGTERM`, `Result=success`; exposure 1.3. The
+password is on the game's argv, as in the image, where any host user can read
+`/proc/<pid>/cmdline`; Valheim has no other way to take it.
 
-**`nix/tests/template.nix`** — the plain-systemd templates with the fake game.
+**`nix/tests/valheim-real.nix`** (`heavyChecks.valheim-vm`) — the real 1.0.20
+package from GHCR in the confined unit, as `dan`, offline: it generates its
+world and is ready on `Opened Steam server` (about 2 minutes in a 4-core VM),
+binds 2470 and 2471 and not 2456, and a stop saves (`World save (5/5) done`, a
+`worlds_local/Longship/` of chunks: 1.0's save format) with `Result=success`;
+a restart loads that world again. Before it passed it found the missing
+`/etc/passwd` above. The same package was run by hand on the host, online, in
+a bwrap with the unit's view: `Game server connected` once in a first run and
+not at all in a second, `Opened Steam server` in both.
+
+**`nix/tests/template.nix`** — the plain-systemd templates with no module, as
+installed (the tools package's `share/chandlery/systemd`), on the fake Bedrock
+and Valheim packages linked at `/var/lib/chandlery-packages/<n>`: ready on the
+package's `game.env` line; the console FIFO as `chandlery` 0600; `CHANDLERY_SET`
+setting the two port keys and nothing else; `CHANDLERY_ARGS` replacing
+Valheim's arguments; no `/srv`, and only its own world under
+`/var/lib/chandlery`; `PrivatePIDs`; stop saving (Bedrock's `stop`, Valheim's
+`SIGINT`); repointing the package link and restarting runs the new version;
+the exposure score.
 
 ## Order of work
 
@@ -778,18 +863,20 @@ password from `environmentFiles` and absent from argv, stop by `SIGINT` saves.
    `TREESINGER_SOCKET` in `images/hytale/run` (+ its Docker tests),
    `packages.hytale`, `treesinger.socket`, `tests/hytale.nix`,
    `tests/hytale-real.nix`. **Hytale done.**
-5. `packages.valheim`, `tests/valheim.nix`.
-6. CI: versions bump in the three workflows, the `nix` job.
-7. Plain-systemd templates, `make install-systemd`, `tests/template.nix`,
-   `systemd/README.md`, a README section.
+5. ✓ `packages.valheim`, `tests/valheim.nix`, `tests/valheim-real.nix`.
+   **Valheim done.**
+6. ✓ CI: `nix/push-pin` in the three workflows, the `nix` job, `nix.yml`.
+7. ✓ Plain-systemd templates, `chandlery-unpack IMAGE DEST`, `make
+   install-systemd`, `tests/template.nix`, `systemd/README.md`, a README
+   section.
 
 ## Open questions
 
-1. **Readiness line for Valheim** needs confirming from a live log; until
-   then its default could be `null` (`Type=exec`) rather than a guess that
-   kills a healthy server at `TimeoutStartSec`. Hytale's is settled:
-   `Hytale Server Booted!`, printed by the real 0.7.4 server in
-   `tests/hytale-real.nix` 28 s into boot, after it is listening.
+1. ~~**Readiness lines.**~~ Settled for both: Hytale's `Hytale Server
+   Booted!` (28 s in, after it listens) and Valheim's `Opened Steam server`
+   (world loaded, socket open; online and offline). Still unseen: Valheim's
+   `Opened PlayFab server` under `-crossplay`, which the default pattern also
+   accepts. If it never comes, a crossplay server needs `readyPattern = null`.
 2. ~~**`PrivateUsers=yes` and `SupplementaryGroups=treesinger`.**~~ Settled:
    works. The group is unmapped in the server's user namespace, but the
    socket's permission check is on the real gid; `tests/hytale.nix` mints
@@ -811,14 +898,18 @@ password from `environmentFiles` and absent from argv, stop by `SIGINT` saves.
 7. **First boot under Tidewaiter.** A profile that does not exist yet means an
    `ExecStart` that fails. Tidewaiter's module should seed the profile with
    `desired` at activation when it is missing; noted for that branch.
-8. **Disk on the free runner** for checks that unpack Hytale's 3.4 GB: gated
-   off the blocking path; or the check frees runner disk first.
+8. **Disk on the free runner** for the real Hytale (1.8 GB of layers, 4.1 GB
+   unpacked) and Valheim (1.9 GB and 2 GB): off the blocking path in
+   `nix.yml`, which frees disk first. Not yet run on GitHub, so whether it fits
+   is still to be seen.
 9. **Redistribution.** The packages contain what the images already
    redistribute (PLAN 7.3); a binary cache serving them would widen that.
    Proposed: no public cache; each host builds (fetches) its own.
-10. **Valheim notifications.** No existing rule to reuse; `Got character ZDOID
-    from (?P<player>\S+)` is the usual join line, leave is harder. Out of scope
-    until a Valheim server runs here.
+10. **Valheim notifications.** No existing rule to reuse, so its default
+    `notify.rules` is empty. `Got character ZDOID from (?P<player>\S+)` is the
+    usual join line, but it repeats on every death and respawn, and leave is
+    harder. Out of scope until a Valheim server runs here; `notify.rules`
+    takes any.
 11. **BDS 1.26.52 and NetherNet** (found by the Bedrock VM test; affects the
     image as much as the native unit). The stock `server.properties` now says
     `transport=nethernet`, and with `transport=raknet` BDS logs that NetherNet

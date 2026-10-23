@@ -81,6 +81,13 @@ Every image carries the standard `org.opencontainers.image.*` labels — `versio
 
 Existing images take the version as a runtime environment variable, so the same tag runs different software on different days and "roll back" is not an operation you can perform. Chandlery pins the version — and its checksum — in the image at build time. So `:1.26.44.3` is a fact rather than a hope, and rolling back is an ordinary `docker run` of the older tag.
 
+## Without Docker: systemd, and NixOS
+
+Each game also runs as a **native systemd service** with the same lifecycle: its console a FIFO that `chandlery-console <name> say hello` types at, a `systemctl stop` that types the game's own save-and-quit and waits, and `Type=notify` readiness that means the game says it is up. The game comes out of the published image, and the image's own scripts run unchanged, because inside its sandbox a server sees what its container saw: its world at `/data`, the game at `/opt/<game>`.
+
+- **Any systemd distribution:** `make install-systemd`, then `chandlery-unpack ghcr.io/danielbodart/chandlery/bedrock:<version> …` and `systemctl enable --now chandlery@<name>.socket chandlery@<name>.service`. See [systemd/README.md](./systemd/README.md).
+- **NixOS:** the flake has `packages.x86_64-linux.{bedrock,hytale,valheim}`, pinned in [`nix/versions.json`](./nix/versions.json), which CI updates in the same run that publishes each image, and a module, `services.chandlery.servers.<name>`, that confines each server to its own closure and world. The design and what each NixOS VM test proves are in [docs/nix.md](./docs/nix.md).
+
 ## The fleet
 
 Chandlery is the **build** half of a hands-off homelab: it turns each game release into a versioned image. Its sibling [**tidewaiter**](https://github.com/danielbodart/tidewaiter) is the **deploy** half — it swaps a running container for a newer image *only when the server is idle*, health-gated, with rollback. The loop closes:
@@ -105,6 +112,8 @@ $ make help        # the other targets
 The tests drive actual containers, and the fixtures are built to fail honestly: the fake Bedrock server ignores `SIGTERM` and only saves when told `stop` on its console, and the fake Valheim server ignores `SIGTERM` and saves only on `SIGINT`. Wire the stop hook up wrongly and you get a killed container, not a passing test.
 
 `make test-valheim-adapter` covers Valheim's prepare checks, argument assembly, stop signal and health probe without the 1.6 GB download.
+
+The native side has its own tests: `make test-systemd` (the Go helpers and shell tools), `make test-versions` (the version pins CI writes), and `nix flake check`, which builds the packages and runs NixOS VM tests of the units on fakes of all three games and on real Bedrock. The real Hytale and Valheim servers boot in VMs with `nix build .#heavyChecks.hytale-vm` and `.#heavyChecks.valheim-vm`; those fetch gigabytes, so CI runs them weekly ([nix.yml](./.github/workflows/nix.yml)).
 
 ## License
 
