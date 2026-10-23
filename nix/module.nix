@@ -568,6 +568,11 @@ let
     in
     {
       description = "Chandlery ${s.game} server ${name}: data directory";
+      # The server Requires this unit, and a restart of it restarts the server:
+      # a switch that changes it (a new chandlery-make-data-dir, after any bump
+      # of nixpkgs or the tools) must not restart a server that opted out of
+      # restarts on switch, as Tidewaiter's does, its players kicked.
+      restartIfChanged = config.systemd.services."chandlery-${name}".restartIfChanged;
       unitConfig.RequiresMountsFor = [ s.dataDir ];
       serviceConfig = {
         Type = "oneshot";
