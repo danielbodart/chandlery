@@ -35,13 +35,13 @@ nix/
     bedrock.nix               Mojang zip -> autoPatchelf'd package
     hytale.nix                GHCR layers -> package, with temurin-jre-bin-25
     valheim.nix               GHCR layers -> autoPatchelf'd package
-    mc-monitor.nix            Bedrock's health probe (itzg/mc-monitor, pinned)
+    mc-monitor.nix            Bedrock's health probe (itzg/mc-monitor 1.18.3, Go 1.27)
     chandlery-a2s.nix         Valheim's health probe (images/valheim/probe)
     chandlery-systemd.nix     the native tools below, as one package
   module.nix                  services.chandlery
   tests/
-    fake-game.nix             a game-shaped package around test/fixtures' fakes
-    module.nix                VM: the unit mechanics on a fake (fast, no download)
+    fake-bds, fake-bds.nix    a Bedrock-shaped package: the real adapter around a fake BDS
+    module.nix                VM: the unit mechanics on the fake (fast, no download)
     bedrock.nix               VM: real BDS end to end
     hytale.nix                VM: hytale adapter on fake java + fake Treesinger
     valheim.nix               VM: valheim adapter on test/fixtures/fake-valheim
@@ -53,6 +53,7 @@ systemd/
   bin/chandlery-console       chandlery-console <n> [cmd...]
   bin/chandlery-stop          ExecStop: run the package's stop hook, wait for exit
   bin/chandlery-prepare       ExecStartPre: stage /opt, run package prepare, set keys
+  bin/chandlery-make-data-dir chandlery-<n>-data-dir.service: create a missing dataDir
   bin/chandlery-set-property  key=value into a .properties file, nothing else touched
   bin/chandlery-unpack        OCI layers -> a package dir (Nix builder and humans)
   units/chandlery@.service    plain-systemd templates
@@ -146,18 +147,29 @@ reads EOF when a writer closes — the job the entrypoint's `exec 3<>` did. Mode
 `0600`: the server's user (and root) can type at it; a shared group like
 `users` cannot.
 
+### `chandlery-<n>-data-dir.service`
+
+A root `Type=oneshot` (`RemainAfterExit`) running `chandlery-make-data-dir
+<dataDir> <user> <group>`, which creates `dataDir` owned by the server's user
+**only if it is missing**, and never touches an existing one — Dan's are
+already `dan:users`, and a `tmpfiles` `d` line would re-own and re-mode them.
+It is its own unit rather than an `ExecStartPre=+`, because systemd sets up the
+server's mount namespace — which binds `dataDir` — even for a privileged
+`ExecStartPre` (seen in the module VM test: `226/NAMESPACE`, `/data: No such
+file or directory`).
+
 ### `chandlery-<n>.service`
 
 ```ini
 [Unit]
-Requires=chandlery-<n>.socket
-After=chandlery-<n>.socket network-online.target
+Requires=chandlery-<n>.socket chandlery-<n>-data-dir.service
+After=chandlery-<n>.socket chandlery-<n>-data-dir.service network-online.target
 Wants=network-online.target
 RequiresMountsFor=<dataDir>
 
 [Service]
 Type=notify
-NotifyAccess=all
+NotifyAccess=main
 Sockets=chandlery-<n>.socket
 StandardInput=socket
 StandardOutput=journal
@@ -170,11 +182,11 @@ EnvironmentFile=…environmentFiles
 WorkingDirectory=/data
 RuntimeDirectory=chandlery/<n>/private
 RuntimeDirectoryMode=0700
-ExecStartPre=+chandlery-make-data-dir <dataDir> <user> <group>
 ExecStartPre=chandlery-prepare <packagePath> [--set server-port=<port> --set server-portv6=<portv6>]
-ExecStart=chandlery-ready -- <packagePath>/bin/<game>-server <game args> <extraArgs>
+ExecStart=chandlery-ready --lock /run/chandlery/<n>/private/running --pattern <readyPattern> -- <packagePath>/bin/chandlery-server <game args> <extraArgs>
 ExecStop=chandlery-stop <packagePath>
 KillSignal=SIGINT
+SuccessExitStatus=130
 TimeoutStartSec=15min
 TimeoutStopSec=5min
 Restart=on-failure
@@ -182,10 +194,12 @@ RestartSec=10s
 # confinement + hardening: see Hardening
 ```
 
-`chandlery-make-data-dir` (`+`, so as root and before the sandbox needs the bind
-source) creates `dataDir` owned by the server's user **only if it is missing**,
-and never touches an existing one — Dan's are already `dan:users`, and a
-`tmpfiles` `d` line would re-own and re-mode them.
+`SuccessExitStatus=130`: `chandlery-ready` reports a game that exited on the
+`SIGINT` `KillSignal` as `128+2`, and that is a stop, not a failure.
+
+The socket is `PartOf=` the service: the console exists exactly as long as the
+server (as in Docker), and a write to a stopped server's console cannot
+socket-activate it — there is no console to write to.
 
 ### Readiness: `chandlery-ready`
 
@@ -217,6 +231,13 @@ everything else in it — a reader child would be killed with the game's final
 output still in the pipe. Keeping the wrapper as PID 1 also gives the game a
 parent that reaps.
 
+The module passes `--pattern` (its per-game default, or the server's
+`readyPattern`); `--game-env <pkg>/lib/chandlery/game.env` reads
+`CHANDLERY_READY` instead, for units that know only the package (the
+plain-systemd templates). `READY=1` reaches systemd from inside the
+confinement and `PrivatePIDs` — confirmed in the module VM test, where the
+unit stays `activating` until the line and `StatusText` is the line.
+
 Default patterns (overridable per server; they are the riskiest guess in this
 design, because a pattern that never matches means a healthy server killed at
 `TimeoutStartSec` — see Open questions):
@@ -240,7 +261,8 @@ chandlery-stop PACKAGE_PATH
    hook, verbatim (`chandlery-console stop`, `chandlery-console /stop`) — with
    `chandlery-console` on `PATH` and `CHANDLERY_CONSOLE` pointing at the FIFO.
 2. Wait for `flock /run/chandlery/<n>/private/running`, i.e. until the game has
-   exited and its output is in the journal.
+   exited and its output is in the journal. (`flock` is the standalone
+   discoteq one: util-linux would put 70 MB more in every server's chroot.)
 
 systemd then sends `KillSignal=SIGINT` to anything left (normally nothing) and
 `SIGKILL` only when `TimeoutStopSec=5min` runs out — the same bounds Docker's
@@ -282,7 +304,9 @@ chandlery-notify --config FILE
 order (RE2, which accepts loggifly's Python `(?P<name>…)` groups), renders
 `message` by substituting `{{ name }}` with each named group — loggifly's own
 template syntax, so the compose labels carry over verbatim — and runs
-`apprise -t TITLE -b BODY`. The URL never touches argv: it is
+`apprise --storage-mode=memory --title TITLE --body BODY` (no persistent cache
+under `DynamicUser`), queued off the reading path so a slow Apprise drops
+rather than stalls. The URL never touches argv: it is
 `LoadCredential=apprise-url:<appriseUrlFile>`, read into `APPRISE_URLS` for the
 child. The unit is `DynamicUser=yes`, `SupplementaryGroups=systemd-journal`,
 otherwise hardened like the game.
@@ -307,7 +331,6 @@ tests (the test asserts an exposure ceiling so a regression fails CI):
 PrivateUsers=yes            # see Open questions for treesinger's supplementary group
 PrivatePIDs=yes             # systemd >= 257; dropped with a warning on older
 ProtectProc=invisible
-ProcSubset=pid              # if the games tolerate it (Java reads /proc/cpuinfo …)
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
@@ -321,7 +344,6 @@ LockPersonality=yes
 PrivateTmp=yes
 PrivateDevices=yes
 PrivateIPC=yes
-RemoveIPC=yes
 ProtectHostname=yes
 ProtectClock=yes
 ProtectKernelTunables=yes
@@ -332,7 +354,15 @@ ProtectSystem=strict
 ProtectHome=yes
 ```
 
+`systemd-analyze security` puts a game unit at **1.3** (systemd 260, confined or
+from a profile); `nix/tests/module.nix` fails above 1.5.
+
 Not set: `MemoryDenyWriteExecute` (Java's JIT and Valheim's Mono need W+X),
+`RemoveIPC` (it removes *every* IPC object of the unit's user when the unit
+stops — with `user = "dan"`, other services' and sessions' too; `PrivateIPC`
+and `PrivateDevices`' private `/dev/shm` already keep the game's to itself),
+`ProcSubset=pid` (would hide `/proc/cpuinfo`, `/proc/meminfo` and
+`/proc/net/if_inet6`, which Java and `images/bedrock/prepare` read; untried),
 `PrivateNetwork` (they are servers), `IPAddressDeny` (players are anywhere).
 `confine = false` on a server drops confinement (not the rest) as an escape
 hatch.
@@ -479,7 +509,8 @@ services.chandlery.servers.<name> = {
   environment     = { TZ = "Europe/London"; };         # attrsOf str
   environmentFiles = [ ];                              # listOf path, e.g. VALHEIM_PASSWORD from sops
   machineIdFile   = null;                              # null or str, bound read-only at /etc/machine-id
-  readyPattern    = "Server started\\.";               # null or str (RE2); default the package's
+  readyPattern    = "Server started\\.";               # null or str (RE2); default per game
+  startTimeout    = "15min";                           # str: TimeoutStartSec
   stopTimeout     = "5min";                            # str: TimeoutStopSec
   confine         = true;                              # bool: confinement (the escape hatch)
   treesinger.socket = null;                            # null or str; Hytale only (assertion)
@@ -492,8 +523,9 @@ services.chandlery.servers.<name> = {
 };
 ```
 
-Also: `services.chandlery.tools` (package, default `pkgs.chandlery.systemd`,
-added to `environment.systemPackages` for `chandlery-console`).
+Also: `services.chandlery.tools` (package, default `nix/pkgs/chandlery-systemd.nix`
+built with the system's `pkgs`, added to `environment.systemPackages` for
+`chandlery-console`) and `services.chandlery.apprise` (default `pkgs.apprise`).
 
 ### Ports, without clobbering the operator's config
 
@@ -633,8 +665,13 @@ comments and order kept, `key=` prefixes not confused, e.g. `server-port` vs
 `server-portv6`); `chandlery-unpack` on a synthetic layer set (order,
 whiteouts, path traversal refused); `nix/update-versions` on a fixture file.
 
-**`nix/tests/module.nix` (fake game, fast, every push)** — a package built
-around `test/fixtures/fake-server` (ignores `SIGTERM`, saves only on `stop`):
+**`nix/tests/module.nix` (fake game, fast, every push)** — the real Bedrock
+package and adapter (`images/bedrock/{run,prepare,stop-hook}`) around
+`nix/tests/fake-bds`, which, like `test/fixtures/fake-server`, ignores
+`SIGTERM` and saves only on `stop`, and answers a `probe` console command by
+printing what it can see from inside the unit. Four servers: Dan's shape
+(static user, existing tree, notify), all defaults, from a profile, and
+`confine = false`.
 socket and FIFO exist with the right owner and mode; the unit stays
 `activating` until the ready line and goes `active` on it; `chandlery-console`
 reaches the game; `systemctl stop` saves (the fake's "world saved" in the
@@ -645,15 +682,16 @@ host processes; `systemd-analyze security` exposure under a ceiling; profile
 mode — `packagePath` at a profile, repoint, restart, new version running;
 notify — a `json://` Apprise URL at a tiny listener in the VM receives `🟢 Steve
 joined` for a matching line and nothing for others, with the URL absent from
-`/proc/*/cmdline`.
+`/proc/*/cmdline`; and a write to a stopped server's console starts nothing.
+Measured: 25 store paths visible confined, 726 from a profile; 5 PIDs.
 
 **`nix/tests/bedrock.nix` (real BDS)** — starts; `READY` on `Server started.`;
-`chandlery-console wrlin say hello` shows in the journal; a world is created
-under `dataDir/worlds`; `server-port`/`server-portv6` patched, a hand-added key
-in `server.properties` survives restarts; the RakNet probe
-(`lib/chandlery/health`) answers on the patched port; `systemctl stop` logs
+`chandlery-console wrlin list` answers in the journal; a world is created
+under `dataDir/worlds`; `server-port`/`server-portv6` patched in the
+operator's own `server.properties` (its other keys kept) and bound by BDS;
+`systemctl stop` logs
 `Quit correctly` and exits cleanly within the timeout; a restart reuses the
-world.
+world. The RakNet health probe is not checked: see Open questions 11.
 
 **`nix/tests/hytale.nix`** — the real adapter on fake `java` and a fake
 Treesinger (a unix-socket HTTP server in the VM answering `/v1/session`):
@@ -669,10 +707,12 @@ password from `environmentFiles` and absent from argv, stop by `SIGINT` saves.
 
 ## Order of work
 
-1. `systemd/` tools with their Go and shell tests.
-2. `flake.nix`, `nix/versions.json` (seeded from the current releases),
-   `nix/update-versions`, `nix/oci.nix`, `packages.bedrock`.
-3. The module and `tests/module.nix`, then `tests/bedrock.nix`. **Bedrock done.**
+1. ✓ `systemd/` tools with their Go and shell tests.
+2. ✓ `flake.nix`, `nix/versions.json` (Bedrock only so far),
+   `nix/update-versions` (`bedrock` only), `packages.bedrock`. `nix/oci.nix`
+   and the `oci` form of `update-versions` come with Hytale.
+3. ✓ The module and `tests/module.nix`, then `tests/bedrock.nix`. **Bedrock
+   done.**
 4. `TREESINGER_SOCKET` in `images/hytale/run` (+ its Docker test),
    `packages.hytale`, `tests/hytale.nix`.
 5. `packages.valheim`, `tests/valheim.nix`.
@@ -692,14 +732,14 @@ password from `environmentFiles` and absent from argv, stop by `SIGINT` saves.
    supplementary group may fail or be dropped. If the VM test shows that,
    Hytale-with-Treesinger uses `PrivateUsers=identity` (systemd 257+, maps
    0–65535 to themselves, still no capabilities on the host).
-3. **BDS and the symlinked `/opt/bedrock`.** If BDS resolves its own directory
-   through `/proc/self/exe`, it would read the store's stock
-   `server.properties`. The Bedrock VM test settles it; the fallback is to copy
-   `bedrock_server` itself (≈ 100 MB) into the staged dir, moving the staging
-   from `/run` (RAM) to a `CacheDirectory`.
-4. **Type=notify inside confinement.** systemd bind-mounts the notify socket
-   into a `RootDirectory=` namespace on current versions; confirmed by the
-   module VM test, not assumed.
+3. ~~**BDS and the symlinked `/opt/bedrock`.**~~ Settled: BDS works from its
+   cwd, not `/proc/self/exe`. In the Bedrock VM test it reads the operator's
+   `/data/server.properties` through the staged link (its `online-mode=false`,
+   `transport` and the unit's ports all take effect), creates and reopens its
+   world under `/data/worlds`, and writes nothing that the staging refuses.
+4. ~~**Type=notify inside confinement.**~~ Works (systemd 260): the module VM
+   test sees `activating` until the ready line, with confinement and
+   `PrivatePIDs`.
 5. **Pushing to `master` from CI** assumes no branch protection that blocks
    `GITHUB_TOKEN`. If there is one, the bump becomes a PR that auto-merges.
 6. **Getting a bump to Dan's server** needs nix-config's `chandlery` input to
@@ -717,3 +757,23 @@ password from `environmentFiles` and absent from argv, stop by `SIGINT` saves.
 10. **Valheim notifications.** No existing rule to reuse; `Got character ZDOID
     from (?P<player>\S+)` is the usual join line, leave is harder. Out of scope
     until a Valheim server runs here.
+11. **BDS 1.26.52 and NetherNet** (found by the Bedrock VM test; affects the
+    image as much as the native unit). The stock `server.properties` now says
+    `transport=nethernet`, and with `transport=raknet` BDS logs that NetherNet
+    is "the only supported transport type" and answers mc-monitor's RakNet
+    ping with an empty response — so **`images/bedrock/health` fails against
+    this release** whichever way the server is configured, and the Docker
+    image's `HEALTHCHECK` will call a healthy server unhealthy. Offline (the VM
+    has no internet), NetherNet bound `server-port` on one start and only a
+    random UDP port on the next. Needs: a probe that speaks NetherNet (or a
+    port-bound check) for both, and checking what Dan's old LinuxGSM
+    `server.properties`, which has no `transport` key, defaults to. The VM
+    test runs RakNet without LAN visibility (which would bind 19132/19133
+    whatever `server-port` says) to check the ports deterministically.
+12. **BDS hangs when it stops itself.** With `online-mode=true` and no
+    internet, BDS logs "Could not connect to Minecraft services", then "Server
+    stop requested", and never exits (9 minutes, in the VM); the same after
+    refusing `allow-list` without online mode. A console `stop` exits in under
+    a second. If the unit is still `activating` when that happens, systemd
+    kills it at `TimeoutStartSec` (15 min) and restarts it; after `READY` it
+    would sit there. Not ours to fix; worth a `WatchdogSec`-style check later.
