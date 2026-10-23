@@ -188,9 +188,14 @@ in
 
     with subtest("a crash restarts it"):
         machine.succeed("systemctl start chandlery-alpha.service")
+        before = show("alpha", "MainPID")
         machine.succeed("chandlery-console alpha crash")
-        machine.wait_until_succeeds("test $(systemctl show -P NRestarts chandlery-alpha.service) = 1", timeout=60)
+        # From the journal, not NRestarts: the console socket is PartOf the
+        # server, so it restarts with it, and its start can take over the
+        # restart job and reset the counter (two runs of three here).
+        machine.wait_until_succeeds("journalctl -u chandlery-alpha.service | grep -q 'Scheduled restart job, restart counter is at 1'", timeout=60)
         machine.wait_for_unit("chandlery-alpha.service")
+        assert show("alpha", "MainPID") != before
 
     with subtest("systemd-analyze security holds the ceiling"):
         for unit in ["alpha", "gamma"]:
