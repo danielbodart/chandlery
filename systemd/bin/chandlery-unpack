@@ -1,24 +1,175 @@
 #!/bin/sh
-# Lay a game's tree out of a published image's layers, as Docker would have
-# stacked them, without Docker: how the Nix packages take Hytale and Valheim
-# from GHCR (nix/oci.nix), which have already done the OAuth-gated or
-# Steam-licensed fetch.
+# Lay a game out of a published image, as Docker would have stacked it,
+# without Docker.
 #
+#   chandlery-unpack IMAGE[:TAG|@DIGEST] DEST
 #   chandlery-unpack --blobs DEST SUBTREE BLOB...
 #
-# Applies each layer BLOB (a tar, gzip'd or zstd'd — GNU tar tells which), in
-# order, keeping only what it writes under SUBTREE (e.g. opt/hytale), into
-# DEST/SUBTREE. Whiteouts are honoured as overlayfs would: `.wh.NAME` deletes
-# NAME from the layers below, `.wh..wh..opq` empties its directory first. A
-# layer that names an absolute path or a `..`, or leaves a symlink pointing out
-# of DEST, is refused — with nothing of DEST trusted until the end.
+# IMAGE (e.g. ghcr.io/danielbodart/chandlery/bedrock:1.26.52.3) becomes a
+# Chandlery package at DEST, as the plain-systemd units run it (systemd/README.md):
+# the image's /opt/<game>, its adapter scripts from /usr/local (bin/<game>-server,
+# lib/chandlery/{prepare,stop,health}, the console.sh and probes they call in
+# libexec/chandlery) and a lib/chandlery/game.env made from the image's ENV and
+# CMD. Only the layers that write those are fetched, anonymously, each checked
+# against its digest. The games are amd64; an index resolves to linux/amd64.
+# OCI_REGISTRY_URL (default https://<host>/v2) points the tests at a fixture.
+#
+# --blobs is the unpacking itself, and how the Nix packages take Hytale and
+# Valheim from GHCR (nix/oci.nix), which have already done the OAuth-gated or
+# Steam-licensed fetch: it applies each layer BLOB (a tar, gzip'd or zstd'd —
+# GNU tar tells which), in order, keeping only what it writes under SUBTREE
+# (e.g. opt/hytale), into DEST/SUBTREE. Whiteouts are honoured as overlayfs
+# would: `.wh.NAME` deletes NAME from the layers below, `.wh..wh..opq` empties
+# its directory first. A layer that names an absolute path or a `..`, or leaves
+# a symlink pointing out of DEST, is refused — with nothing of DEST trusted
+# until the end.
 #
 # Ownership and modes beyond the owner's are not kept (the image normalised
 # them for a user that does not exist here), nor are mtimes.
 set -eu
 
 log() { printf '[chandlery-unpack] %s\n' "$*" >&2; }
-usage() { echo "usage: chandlery-unpack --blobs DEST SUBTREE BLOB..." >&2; exit 64; }
+usage() {
+    echo "usage: chandlery-unpack IMAGE[:TAG|@DIGEST] DEST" >&2
+    echo "       chandlery-unpack --blobs DEST SUBTREE BLOB..." >&2
+    exit 64
+}
+
+# What a game's image does not say about itself: the line it is ready on (as
+# nix/pkgs/<game>.nix has it), whether it writes into its own directory, and
+# the file its ports are set in.
+game_env() {
+    case "$1" in
+        bedrock) printf '%s\n' "CHANDLERY_READY='Server started\.'" CHANDLERY_STAGE=copy-links CHANDLERY_PROPERTIES=/data/server.properties ;;
+        hytale) printf '%s\n' "CHANDLERY_READY='Hytale Server Booted!'" CHANDLERY_STAGE=link ;;
+        valheim) printf '%s\n' "CHANDLERY_READY='Opened (Steam|PlayFab) server'" CHANDLERY_STAGE=link ;;
+    esac
+}
+
+# GET from the image's registry, anonymously; GHCR serves a public image to any
+# bearer.
+registry_get() {  # $1 = path below /v2/<repository>/
+    curl -fsSL -H 'Authorization: Bearer QQ==' \
+        -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+        "$registry/$repository/$1"
+}
+
+from_image() {
+    ref=$1 dest=$2
+    case "$ref" in
+        *@sha256:*) image=${ref%@*} tag=${ref#*@} ;;
+        */*:*) image=${ref%:*} tag=${ref##*:} ;;
+        *) image=$ref tag=latest ;;
+    esac
+    case "$image" in */*) ;; *) log "[$ref] is not HOST/REPOSITORY[:TAG|@DIGEST]"; exit 64 ;; esac
+    host=${image%%/*} repository=${image#*/}
+    game=${repository##*/}
+    case "$game" in
+        bedrock | hytale | valheim) ;;
+        *) log "[$game] is not a Chandlery game (bedrock, hytale, valheim)"; exit 64 ;;
+    esac
+    [ ! -e "$dest" ] || { log "$dest already exists; unpack each version to a new directory"; exit 73; }
+    registry=${OCI_REGISTRY_URL:-https://$host/v2}
+
+    work=$(mktemp -d "${TMPDIR:-/tmp}/chandlery-unpack.XXXXXX")
+    trap 'rm -rf "$work"' EXIT
+    registry_get "manifests/$tag" > "$work/manifest" || { log "cannot fetch $ref"; exit 69; }
+    case "$tag" in
+        sha256:*)
+            [ "sha256:$(sha256sum < "$work/manifest" | cut -d' ' -f1)" = "$tag" ] \
+                || { log "$image's manifest does not hash to $tag"; exit 65; } ;;
+    esac
+    manifest=$(cat "$work/manifest")
+    if [ "$(printf '%s' "$manifest" | jq -r '.manifests != null')" = true ]; then
+        platform=$(printf '%s' "$manifest" | jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")][0].digest // empty')
+        [ -n "$platform" ] || { log "$ref has no linux/amd64 image"; exit 65; }
+        manifest=$(registry_get "manifests/$platform")
+    fi
+    config_digest=$(printf '%s' "$manifest" | jq -r .config.digest)
+    registry_get "blobs/$config_digest" > "$work/config"
+    [ "sha256:$(sha256sum < "$work/config" | cut -d' ' -f1)" = "$config_digest" ] \
+        || { log "$ref's config does not hash to $config_digest"; exit 65; }
+
+    # The history's non-empty steps are the layers, in order (as
+    # nix/update-versions pairs them): keep those that write the game or the
+    # adapter.
+    layers=$(jq -rn --argjson m "$manifest" --slurpfile c "$work/config" --arg opt "/opt/$game" '
+        [$c[0].history[] | select(.empty_layer != true)] as $steps
+        | if ($steps | length) != ($m.layers | length)
+          then error("\($steps | length) non-empty history steps for \($m.layers | length) layers")
+          else range($steps | length) as $i
+               | select(($steps[$i].created_by // "") | test($opt + "(/|\\s|$)|/usr/local/(bin|lib/chandlery)(/|\\s|$)"))
+               | $m.layers[$i].digest
+          end') || { log "cannot pair $ref's layers with its history"; exit 65; }
+    [ -n "$layers" ] || { log "no layer of $ref writes /opt/$game"; exit 65; }
+
+    n=0
+    for digest in $layers; do
+        n=$((n + 1))
+        log "layer $n: $digest"
+        registry_get "blobs/$digest" > "$work/$n.layer" || { log "cannot fetch layer $digest"; exit 69; }
+        [ "sha256:$(sha256sum < "$work/$n.layer" | cut -d' ' -f1)" = "$digest" ] \
+            || { log "layer $digest does not hash to its digest"; exit 65; }
+        set -- "$@" "$work/$n.layer"
+    done
+    shift 2
+    "$0" --blobs "$work/root" "opt/$game" "$@"
+    "$0" --blobs "$work/root" usr/local "$@"
+
+    # The package layout (docs/nix.md), with the image's absolute paths to its
+    # own pieces pointed at where they now are.
+    mkdir -p "$(dirname "$dest")"
+    pkg=$(cd "$(dirname "$dest")" && pwd -P)/$(basename "$dest")
+    out="$work/pkg"
+    local_=$work/root/usr/local
+    [ -f "$local_/bin/$game-server" ] || { log "$ref has no /usr/local/bin/$game-server"; exit 65; }
+    mkdir -p "$out/bin" "$out/lib/chandlery" "$out/libexec/chandlery"
+    mv "$work/root/opt" "$out/opt"
+    mv "$local_/bin/$game-server" "$out/bin/"
+    ln -s "$game-server" "$out/bin/chandlery-server"
+    rm -f "$local_/bin/chandlery-entrypoint"
+    find "$local_/bin" -mindepth 1 -maxdepth 1 -exec mv {} "$out/libexec/chandlery/" \;
+    [ ! -d "$local_/lib/chandlery" ] || find "$local_/lib/chandlery" -mindepth 1 -maxdepth 1 -exec mv {} "$out/lib/chandlery/" \;
+    # Valheim's hook signals a PID no ExecStop can see; the units' KillSignal,
+    # SIGINT, is the signal it sends (docs/nix.md, "Stop").
+    [ "$game" != valheim ] || rm -f "$out/lib/chandlery/stop"
+    for f in "$out"/bin/"$game"-server "$out"/lib/chandlery/*; do
+        [ -f "$f" ] || continue
+        sed -i -e "s|/usr/local/lib/chandlery/|$pkg/lib/chandlery/|g" \
+               -e "s|/usr/local/bin/|$pkg/libexec/chandlery/|g" "$f"
+        chmod 0755 "$f"
+    done
+    chmod 0755 "$out"/libexec/chandlery/*
+
+    {
+        echo "GAME=$game"
+        # The image's ENV, but for what belongs to its Debian (PATH, its JRE's
+        # home) or its user.
+        jq -r '.config.Env // [] | .[]' "$work/config" | while IFS= read -r kv; do
+            case "${kv%%=*}" in PATH | JAVA_HOME | LANG | CHANDLERY_USER) continue ;; esac
+            case "$kv" in *"'"*) log "skipping $kv: a quote in it"; continue ;; esac
+            printf "%s='%s'\n" "${kv%%=*}" "${kv#*=}"
+        done
+        game_env "$game"
+        # The image's CMD after the server itself: Valheim's -name, -world,
+        # -port, -public. A server's own CHANDLERY_ARGS replaces it, as
+        # compose's command: replaces CMD.
+        args=$(jq -r '.config.Cmd // [] | .[1:] | join(" ")' "$work/config")
+        [ -z "$args" ] || printf "CHANDLERY_ARGS='%s'\n" "$args"
+        # What it came from, for the operator: chandlery-unpack is not a
+        # package manager, and this is the only record.
+        echo "CHANDLERY_IMAGE='$ref'"
+    } > "$out/lib/chandlery/game.env"
+    chmod -R u+w,go+rX "$out"
+    mv "$out" "$pkg"
+    log "$ref is at $pkg"
+}
+
+if [ "${1:-}" != --blobs ]; then
+    [ "$#" -eq 2 ] || usage
+    from_image "$@"
+    exit 0
+fi
 
 [ "$#" -ge 4 ] && [ "$1" = --blobs ] || usage
 dest=$2 subtree=${3%/}; shift 3

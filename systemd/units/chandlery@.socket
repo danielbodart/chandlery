@@ -1,0 +1,15 @@
+# The console of Chandlery game server %i: a FIFO the server reads as its
+# stdin, that `chandlery-console %i <command>` and the stop hook write to. It
+# lives exactly as long as the server, as in Docker; a write to it never starts
+# a stopped server. See systemd/README.md.
+[Unit]
+Description=Chandlery game server %i: console
+PartOf=chandlery@%i.service
+
+[Socket]
+ListenFIFO=/run/chandlery/%i/console
+SocketUser=chandlery
+SocketGroup=chandlery
+SocketMode=0600
+DirectoryMode=0755
+RemoveOnStop=yes

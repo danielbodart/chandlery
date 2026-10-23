@@ -1,0 +1,2 @@
+# The user Chandlery's template units run game servers as (systemd-sysusers).
+u chandlery - "Chandlery game servers" /var/lib/chandlery

@@ -95,6 +95,7 @@
           bedrock-vm = test ./nix/tests/bedrock.nix;
           hytale-vm = test ./nix/tests/hytale.nix;
           valheim-vm = test ./nix/tests/valheim.nix;
+          template-vm = test ./nix/tests/template.nix;
         };
 
       # Checks too heavy for every push (gigabytes of game, a 4 GB JVM): run by

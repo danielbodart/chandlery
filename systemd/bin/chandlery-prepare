@@ -14,7 +14,9 @@
 #
 # --set rewrites just those keys in the game's properties file
 # (CHANDLERY_PROPERTIES, after prepare has seeded it): how the unit sets a port
-# without owning the rest of the operator's config.
+# without owning the rest of the operator's config. CHANDLERY_SET, a
+# space-separated list of KEY=VALUE, adds the same after the arguments: how the
+# plain-systemd template takes them from a server's environment file.
 set -eu
 
 log() { printf '[chandlery] %s\n' "$*" >&2; }
@@ -26,6 +28,9 @@ pkg=$(readlink -f "$1")
 env="$pkg/lib/chandlery/game.env"
 [ -r "$env" ] || { log "$1 is not a Chandlery package: no lib/chandlery/game.env"; exit 66; }
 shift
+for kv in ${CHANDLERY_SET:-}; do
+    set -- "$@" --set "$kv"
+done
 # shellcheck disable=SC1090
 . "$env"
 : "${GAME:?game.env sets no GAME}"

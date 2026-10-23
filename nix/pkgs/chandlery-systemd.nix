@@ -14,6 +14,9 @@
   gnutar,
   gzip,
   zstd,
+  gnused,
+  curl,
+  jq,
 }:
 
 buildGoModule {
@@ -53,7 +56,7 @@ buildGoModule {
         ]
       }:$out/bin
     done
-    # Not run by any unit, so its tar and decompressors stay out of the
+    # Not run by any unit, so its tar, decompressors and curl stay out of the
     # servers' confinement.
     wrapProgram $out/bin/chandlery-unpack --prefix PATH : ${
       lib.makeBinPath [
@@ -62,8 +65,17 @@ buildGoModule {
         gnutar
         gzip
         zstd
+        gnused
+        curl
+        jq
       ]
     }
+    # The plain-systemd templates, pointed at these tools (systemd/README.md).
+    for f in chandlery@.service chandlery@.socket; do
+      install -Dm0644 $src/systemd/units/$f $out/share/chandlery/systemd/$f
+      substituteInPlace $out/share/chandlery/systemd/$f --replace-quiet @bindir@ $out/bin
+    done
+    install -Dm0644 $src/systemd/units/chandlery.sysusers $out/lib/sysusers.d/chandlery.conf
   '';
 
   # The shell half's tests, against what was just installed.

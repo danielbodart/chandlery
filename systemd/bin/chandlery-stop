@@ -28,6 +28,10 @@ if [ ! -x "$hook" ]; then
 fi
 
 log "asking the server to save and quit"
+# The image's own console.sh, where a package carries one, is the
+# chandlery-console its hook means — not the host's <name> form.
+PATH="$pkg/libexec/chandlery:$PATH"
+export PATH
 "$hook" || { rc=$?; log "stop hook failed (status $rc); stopping with the kill signal"; exit "$rc"; }
 flock "$CHANDLERY_LOCK" true
 log "server has stopped"

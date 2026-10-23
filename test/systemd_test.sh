@@ -249,4 +249,114 @@ it "refuses a subtree that is not below the image's root"
 code=0; chandlery-unpack --blobs "$work/evil3" ../opt "$layers/2.tar" 2>/dev/null || code=$?
 assert_equals 64 "$code" && pass
 
+# ---- chandlery-unpack IMAGE DEST: a package from a registry on disk ----
+
+registry="$work/v2"
+OCI_REGISTRY_URL="file://$registry"
+export OCI_REGISTRY_URL
+blob() {  # $1 = repository, $2 = file; prints its digest, stores it as a blob
+    d="sha256:$(sha256sum < "$2" | cut -d' ' -f1)"
+    mkdir -p "$registry/$1/blobs" "$registry/$1/manifests"
+    cp "$2" "$registry/$1/blobs/$d"
+    echo "$d"
+}
+# An image shaped as images/<game>/Dockerfile builds one: the base's console,
+# a Debian step, the game under /opt, the adapter under /usr/local.
+publish_game() {  # $1 = game, $2 = CMD as JSON; prints REPOSITORY@DIGEST
+    repo=chandlery/$1 src="$work/img-$1"
+    mkdir -p "$src/base/usr/local/bin" "$src/deb/usr/bin" "$src/game/opt/$1" \
+        "$src/adapter/usr/local/bin" "$src/adapter/usr/local/lib/chandlery"
+    cp "$repo_root/images/base/console.sh" "$src/base/usr/local/bin/chandlery-console"
+    echo entry > "$src/base/usr/local/bin/chandlery-entrypoint"
+    echo debian > "$src/deb/usr/bin/other"
+    echo game > "$src/game/opt/$1/server"
+    printf '#!/bin/sh\nexec /usr/local/lib/chandlery/prepare "$@"\n' > "$src/adapter/usr/local/bin/$1-server"
+    printf '#!/bin/sh\nchandlery-console stop\n' > "$src/adapter/usr/local/lib/chandlery/stop"
+    printf '#!/bin/sh\nexec /usr/local/bin/probe\n' > "$src/adapter/usr/local/lib/chandlery/health"
+    printf '#!/bin/sh\necho probed\n' > "$src/adapter/usr/local/bin/probe"
+    for l in base deb game adapter; do tar -czf "$src/$l.tgz" -C "$src/$l" .; done
+    cat > "$src/config" <<JSON
+{"config":{"Env":["PATH=/usr/local/bin:/usr/bin","CHANDLERY_USER=chandlery","JAVA_HOME=/opt/java","GAME_VERSION=1.2.3"],
+  "Cmd":$2},
+ "history":[
+  {"created_by":"COPY --chmod=0755 console.sh /usr/local/bin/chandlery-console # buildkit"},
+  {"created_by":"RUN apt-get install -y libatomic1"},
+  {"created_by":"ENV GAME_VERSION=1.2.3","empty_layer":true},
+  {"created_by":"COPY --chown=chandlery:chandlery /buckets/00/ /opt/$1/ # buildkit"},
+  {"created_by":"COPY --chmod=0755 images/$1/run /usr/local/bin/$1-server # buildkit"}
+ ]}
+JSON
+    cat > "$src/manifest" <<JSON
+{"schemaVersion":2,"config":{"digest":"$(blob "$repo" "$src/config")"},
+ "layers":[{"digest":"$(blob "$repo" "$src/base.tgz")"},{"digest":"$(blob "$repo" "$src/deb.tgz")"},
+           {"digest":"$(blob "$repo" "$src/game.tgz")"},{"digest":"$(blob "$repo" "$src/adapter.tgz")"}]}
+JSON
+    d=$(blob "$repo" "$src/manifest")
+    cp "$src/manifest" "$registry/$repo/manifests/$d"
+    cp "$src/manifest" "$registry/$repo/manifests/latest"
+    echo "ghcr.io/$repo@$d"
+}
+repo_root=$(cd .. && pwd)
+
+it "lays an image out as a package: the game, the adapter, the image's own console"
+ref=$(publish_game bedrock '["/usr/local/bin/bedrock-server"]')
+chandlery-unpack "$ref" "$work/packages/bedrock-1.2.3" 2>/dev/null
+p="$work/packages/bedrock-1.2.3"
+assert_equals "bin/bedrock-server
+bin/chandlery-server
+lib/chandlery/game.env
+lib/chandlery/health
+lib/chandlery/stop
+libexec/chandlery/chandlery-console
+libexec/chandlery/probe
+opt/bedrock/server" "$(cd "$p" && find . \( -type f -o -type l \) | sed 's|^\./||' | sort)" && pass
+
+it "points the adapter's absolute paths at the package"
+assert_contains "$(cat "$p/bin/bedrock-server")" "exec $p/lib/chandlery/prepare" \
+    && assert_equals probed "$("$p/lib/chandlery/health")" && pass
+
+it "writes game.env from the image's ENV, without its Debian's, and the game's readiness"
+assert_equals "GAME=bedrock
+GAME_VERSION='1.2.3'
+CHANDLERY_READY='Server started\.'
+CHANDLERY_STAGE=copy-links
+CHANDLERY_PROPERTIES=/data/server.properties
+CHANDLERY_IMAGE='$ref'" "$(cat "$p/lib/chandlery/game.env")" && pass
+
+it "is a package chandlery-prepare and chandlery-stop take"
+mkdir -p "$work/opt2"
+CHANDLERY_OPT="$work/opt2" chandlery-prepare "$p" 2>/dev/null
+mkfifo "$work/console2"
+( read -r line < "$work/console2"; echo "$line" > "$work/typed" ) &
+CHANDLERY_CONSOLE="$work/console2" chandlery-stop "$p" 2>/dev/null
+wait
+assert_equals "$p/opt/bedrock" "$(readlink -f "$work/opt2/bedrock/server" | xargs dirname)" \
+    && assert_equals stop "$(cat "$work/typed")" && pass
+
+it "keeps the image's CMD arguments as CHANDLERY_ARGS, and drops a PID-signalling stop hook"
+ref=$(publish_game valheim '["/usr/local/bin/valheim-server","-name","Chandlery","-port","2456"]')
+chandlery-unpack "ghcr.io/chandlery/valheim" "$work/packages/valheim" 2>/dev/null
+assert_contains "$(cat "$work/packages/valheim/lib/chandlery/game.env")" "CHANDLERY_ARGS='-name Chandlery -port 2456'" \
+    && [ ! -e "$work/packages/valheim/lib/chandlery/stop" ] && pass
+
+it "refuses to unpack over an existing directory"
+code=0; chandlery-unpack "$ref" "$work/packages/valheim" 2>/dev/null || code=$?
+assert_equals 73 "$code" && pass
+
+it "refuses an image that is not a Chandlery game"
+code=0; chandlery-unpack ghcr.io/someone/minecraft:1 "$work/packages/mc" 2>/dev/null || code=$?
+assert_equals 64 "$code" && pass
+
+it "refuses a manifest that does not hash to the digest asked for"
+cp "$registry/chandlery/bedrock/manifests/latest" "$registry/chandlery/bedrock/manifests/sha256:$(printf '%064d' 1)"
+code=0; chandlery-unpack "ghcr.io/chandlery/bedrock@sha256:$(printf '%064d' 1)" "$work/packages/b2" 2>/dev/null || code=$?
+assert_equals 65 "$code" && [ ! -e "$work/packages/b2" ] && pass
+
+it "sets the keys CHANDLERY_SET lists, after its arguments"
+rm -f "$DATA/server.properties"
+CHANDLERY_SET="server-port=19150 server-portv6=19151" chandlery-prepare "$pkg" 2>/dev/null
+assert_equals "stock
+server-port=19150
+server-portv6=19151" "$(cat "$DATA/server.properties")" && pass
+
 summary "systemd tools"

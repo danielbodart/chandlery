@@ -47,7 +47,7 @@ VALHEIM_VERSION      ?= dev
 HYTALE_VERSION   ?= dev
 HYTALE_PATCHLINE ?= release
 
-.PHONY: help base bedrock valheim hytale fake-valheim fake-hytale test test-base test-bedrock test-valheim test-valheim-adapter test-hytale test-hytale-adapter test-systemd test-versions clean
+.PHONY: help base bedrock valheim hytale fake-valheim fake-hytale test test-base test-bedrock test-valheim test-valheim-adapter test-hytale test-hytale-adapter test-systemd test-versions install-systemd clean
 
 help:
 	@echo "make base        build the skeleton image"
@@ -58,7 +58,8 @@ help:
 	@echo "make test-valheim-adapter   Valheim's adapter, without the download"
 	@echo "make test-hytale-adapter    Hytale's adapter, without a token or download"
 	@echo "make test-systemd           the native systemd tools (Go and sh, no Docker)"
-	@echo "make test-versions          nix/update-versions, which CI runs to bump nix/versions.json"
+	@echo "make test-versions          nix/update-versions and nix/push-pin, which CI runs to bump nix/versions.json"
+	@echo "make install-systemd        the native tools and template units, for plain systemd (systemd/README.md)"
 	@echo "make clean       remove the images these targets build"
 
 base:
@@ -148,6 +149,25 @@ test-systemd:
 # nix/update-versions, on a fixture: jq only.
 test-versions:
 	./test/versions_test.sh
+
+# The native tools and the chandlery@.service/.socket templates, for running the
+# games on plain systemd without Docker or Nix (systemd/README.md). Needs Go to
+# build the two helpers; DESTDIR for packagers.
+PREFIX     ?= /usr/local
+BINDIR     ?= $(PREFIX)/bin
+LIBEXECDIR ?= $(PREFIX)/libexec
+UNITDIR    ?= /etc/systemd/system
+SYSUSERSDIR ?= /etc/sysusers.d
+install-systemd:
+	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(LIBEXECDIR)/chandlery $(DESTDIR)$(UNITDIR) $(DESTDIR)$(SYSUSERSDIR)
+	cd systemd && CGO_ENABLED=0 go build -trimpath -o $(abspath $(DESTDIR)$(BINDIR))/ ./cmd/...
+	for f in systemd/bin/*; do install -m0755 "$$f" $(DESTDIR)$(BINDIR)/; done
+	install -m0755 images/base/console.sh $(DESTDIR)$(LIBEXECDIR)/chandlery/console
+	sed -i 's|@consoleSh@|$(LIBEXECDIR)/chandlery/console|' $(DESTDIR)$(BINDIR)/chandlery-console
+	for f in chandlery@.service chandlery@.socket; do \
+	  sed 's|@bindir@|$(BINDIR)|g' "systemd/units/$$f" > $(DESTDIR)$(UNITDIR)/$$f; \
+	done
+	install -m0644 systemd/units/chandlery.sysusers $(DESTDIR)$(SYSUSERSDIR)/chandlery.conf
 
 test: test-base test-bedrock test-valheim test-hytale-adapter test-systemd test-versions
 

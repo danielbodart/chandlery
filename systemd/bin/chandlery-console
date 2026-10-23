@@ -29,7 +29,8 @@ fi
 [ -p "$CHANDLERY_CONSOLE" ] || { echo "chandlery-console: no console at $CHANDLERY_CONSOLE (is chandlery-$name running?)" >&2; exit 69; }
 
 echo "[chandlery] $name: type server commands; Ctrl-C or Ctrl-D leaves, the server keeps running" >&2
-journalctl --follow --lines=20 --output=cat --unit="chandlery-$name.service" &
+# The module's chandlery-<name>, or the plain-systemd template's chandlery@<name>.
+journalctl --follow --lines=20 --output=cat --unit="chandlery-$name.service" --unit="chandlery@$name.service" &
 follower=$!
 trap 'kill "$follower" 2>/dev/null' EXIT
 trap 'exit 0' INT TERM

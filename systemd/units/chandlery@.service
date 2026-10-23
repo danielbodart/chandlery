@@ -1,0 +1,87 @@
+# Chandlery game server %i, on plain systemd: the same unit the NixOS module
+# renders (docs/nix.md), with fixed places where a template cannot take options.
+#
+#   the game     /var/lib/chandlery-packages/%i, a package chandlery-unpack laid
+#                out (usually a symlink to one: repoint it to upgrade)
+#   its world    /var/lib/chandlery/%i, which it sees as /data
+#   its console  /run/chandlery/%i/console (chandlery@%i.socket)
+#   its config   /etc/chandlery/%i.env, optional: CHANDLERY_ARGS (the game's
+#                arguments, replacing the image's CMD), CHANDLERY_SET
+#                (server.properties keys), and the game's own variables
+#
+# Override anything else with `systemctl edit chandlery@%i` (User=, Group= and
+# SocketUser=/SocketGroup= on the socket, together). See systemd/README.md.
+[Unit]
+Description=Chandlery game server %i
+Requires=chandlery@%i.socket
+After=chandlery@%i.socket network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+Sockets=chandlery@%i.socket
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+
+User=chandlery
+Group=chandlery
+UMask=0022
+StateDirectory=chandlery/%i
+StateDirectoryMode=0750
+WorkingDirectory=/data
+Environment=HOME=/data CHANDLERY_CONSOLE=/run/chandlery/%i/console CHANDLERY_LOCK=/run/chandlery/%i/private/running
+EnvironmentFile=/var/lib/chandlery-packages/%i/lib/chandlery/game.env
+EnvironmentFile=-/etc/chandlery/%i.env
+
+# private/opt is /opt inside: chandlery-prepare stages the game there (a
+# tmpfs, like a container's writable layer), and the lock chandlery-ready holds
+# lives beside it.
+RuntimeDirectory=chandlery/%i/private chandlery/%i/private/opt
+RuntimeDirectoryMode=0700
+BindPaths=%S/chandlery/%i:/data /run/chandlery/%i /run/chandlery/%i/private/opt:/opt
+# No other world: every other server's, and the usual places games are kept.
+TemporaryFileSystem=/var/lib/chandlery:ro
+InaccessiblePaths=-/srv -/mnt -/media
+
+ExecStartPre=@bindir@/chandlery-prepare /var/lib/chandlery-packages/%i
+ExecStart=@bindir@/chandlery-ready --lock /run/chandlery/%i/private/running --game-env /var/lib/chandlery-packages/%i/lib/chandlery/game.env -- /var/lib/chandlery-packages/%i/bin/chandlery-server $CHANDLERY_ARGS
+ExecStop=@bindir@/chandlery-stop /var/lib/chandlery-packages/%i
+# After the stop hook, or without one: the signal Valheim saves on, and one
+# Java treats as it does SIGTERM.
+KillSignal=SIGINT
+SuccessExitStatus=130
+TimeoutStartSec=15min
+TimeoutStopSec=5min
+Restart=on-failure
+RestartSec=10s
+
+PrivateUsers=yes
+PrivatePIDs=yes
+ProtectProc=invisible
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
