@@ -105,6 +105,10 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.needed == 'true'
     runs-on: ubuntu-latest
+    # contents: write for the pin in nix/versions.json, pushed to master.
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -153,3 +157,18 @@ jobs:
             echo "- \`${IMAGE}:${VERSION}\`"
             echo "- zip sha256 \`${SHA256}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The Nix package (docs/nix.md) builds what nix/versions.json pins: pin
+      # the zip this image was just built from, by the same sha256, so the image
+      # and the native package move together. Only from master, whose image
+      # this is. A push made with GITHUB_TOKEN starts no workflow, so this
+      # cannot loop; an image rebuilt only for our own code pushes nothing.
+      - name: Pin it in nix/versions.json
+        if: github.ref == 'refs/heads/master'
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SHA256: ${{ needs.resolve.outputs.sha256 }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898299+github-actions[bot]@users.noreply.github.com'
+          nix/push-pin bedrock "$VERSION" "$SHA256"

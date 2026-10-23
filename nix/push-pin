@@ -1,0 +1,66 @@
+#!/bin/sh
+# Pin a game in nix/versions.json and push the pin, from the workflow that has
+# just published the game's image (docs/nix.md, "CI").
+#
+#   nix/push-pin bedrock VERSION SHA256
+#   nix/push-pin oci hytale|valheim IMAGE@DIGEST VERSION [KEY=VALUE...]
+#
+# The arguments are nix/update-versions' own. Each attempt starts from the
+# branch as it is now — fetch, reset, rewrite the pin, commit, push — so a lost
+# race with another game's workflow is re-applied on top of the winner rather
+# than merged: re-running the rewrite is cheaper and safer than merging JSON.
+# An unchanged pin (an image rebuilt only for our own code) pushes nothing.
+#
+# PIN_REMOTE (default origin) and PIN_BRANCH (default master) say where;
+# PIN_ATTEMPTS (default 5) how often to try. The commit uses whatever git
+# identity is configured. It resets the checkout it runs in: CI's, not yours.
+set -eu
+
+# One function, called on the line that ends the script: the reset below can
+# rewrite this very file, and sh reads a script as it goes.
+main() {
+    remote=${PIN_REMOTE:-origin}
+    branch=${PIN_BRANCH:-master}
+    attempts=${PIN_ATTEMPTS:-5}
+    root=$(cd "$(dirname "$0")/.." && pwd)
+    case "${1:-}" in
+        bedrock) [ "$#" -ge 2 ] || usage; game=Bedrock version=$2 ;;
+        oci)
+            [ "$#" -ge 4 ] || usage
+            case "$2" in hytale) game=Hytale ;; valheim) game=Valheim ;; *) usage ;; esac
+            version=$4
+            ;;
+        *) usage ;;
+    esac
+    cd "$root"
+
+    n=0
+    while :; do
+        n=$((n + 1))
+        git fetch -q "$remote" "$branch"
+        git reset -q --hard FETCH_HEAD
+        # The pin's rewrite as of the branch being pushed to, not as of the
+        # checkout this run started from.
+        VERSIONS_JSON="$root/nix/versions.json" "$root/nix/update-versions" "$@"
+        if git diff --quiet -- nix/versions.json; then
+            echo "push-pin: nothing to push"
+            return 0
+        fi
+        git commit -q -m "$game: $version in nix/versions.json" -- nix/versions.json
+        if git push -q "$remote" "HEAD:refs/heads/$branch"; then
+            echo "push-pin: pushed $(git rev-parse --short HEAD) to $remote $branch"
+            return 0
+        fi
+        [ "$n" -lt "$attempts" ] || { echo "push-pin: gave up after $n attempts" >&2; return 75; }
+        echo "push-pin: lost a race to $remote $branch; again on top of it" >&2
+        sleep "$n"
+    done
+}
+
+usage() {
+    echo "usage: nix/push-pin bedrock VERSION SHA256" >&2
+    echo "       nix/push-pin oci hytale|valheim IMAGE@DIGEST VERSION [KEY=VALUE...]" >&2
+    exit 64
+}
+
+main "$@"; exit

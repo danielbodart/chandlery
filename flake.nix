@@ -81,11 +81,13 @@
                 nativeBuildInputs = [
                   pkgs.jq
                   pkgs.curl
+                  pkgs.git
                 ];
               }
               ''
+                export HOME=$TMPDIR
                 cp -r ${./test} test && cp -r ${./nix} nix && chmod -R u+w .
-                patchShebangs nix/update-versions
+                patchShebangs nix/update-versions nix/push-pin
                 sh test/versions_test.sh
                 touch $out
               '';

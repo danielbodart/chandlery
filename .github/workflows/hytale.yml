@@ -35,8 +35,9 @@ concurrency:
   group: hytale
   cancel-in-progress: false
 
+# contents: write for the pin in nix/versions.json, pushed to master.
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -67,6 +68,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Rotate the token, resolve the version, bake and push
+        id: build
         env:
           DOCKER_BUILDKIT: "1"
           HYTALE_DOWNLOADER_REFRESH_TOKEN: ${{ secrets.HYTALE_DOWNLOADER_REFRESH_TOKEN }}
@@ -133,6 +135,9 @@ jobs:
           docker push "${IMAGE}:${version}"
           docker push "${IMAGE}:${version}-${rev}"
           docker push "${IMAGE}:latest"
+          # What the Nix package pins: the image just pushed, by its digest.
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "ref=$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:${version}")" >> "$GITHUB_OUTPUT"
 
           {
             echo "### Hytale ${version}"
@@ -140,3 +145,18 @@ jobs:
             echo "- \`${IMAGE}:${version}\`"
             echo "- build sha256 \`${sha}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The Nix package (docs/nix.md) takes the game from this image's layers:
+      # pin the image just pushed, by digest, in nix/versions.json. Its own step,
+      # without the access token. Only from master, whose image this is. A push
+      # made with GITHUB_TOKEN starts no workflow, so this cannot loop; an image
+      # rebuilt only for our own code pushes nothing.
+      - name: Pin it in nix/versions.json
+        if: steps.build.outputs.ref != '' && github.ref == 'refs/heads/master'
+        env:
+          VERSION: ${{ steps.build.outputs.version }}
+          REF: ${{ steps.build.outputs.ref }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898299+github-actions[bot]@users.noreply.github.com'
+          nix/push-pin oci hytale "$REF" "$VERSION"

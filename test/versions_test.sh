@@ -145,4 +145,64 @@ it "refuses a reference without a digest"
 code=0; $update oci hytale "ghcr.io/$repo:0.7.6" 0.7.6 2>/dev/null || code=$?
 assert_equals 65 "$code" && pass
 
+# ---- push-pin: the same rewrite, committed and pushed, from CI ----
+
+# A repository with the two scripts and a pin, pushed to a bare "origin" that
+# CI's checkout is a clone of; another clone stands in for a racing workflow.
+git_q() { git -c init.defaultBranch=master -c user.name=ci -c user.email=ci@example.invalid "$@"; }
+origin="$work/origin.git"
+git_q init -q --bare "$origin"
+git_q clone -q "$origin" "$work/seed" 2>/dev/null
+mkdir -p "$work/seed/nix"
+cp ../nix/update-versions ../nix/push-pin "$work/seed/nix/"
+reset; cp "$VERSIONS_JSON" "$work/seed/nix/versions.json"
+git_q -C "$work/seed" add -A
+git_q -C "$work/seed" commit -q -m seed
+git_q -C "$work/seed" push -q origin HEAD:master
+git_q clone -q "$origin" "$work/ci"
+git -C "$work/ci" config user.name ci
+git -C "$work/ci" config user.email ci@example.invalid
+pinned() { git -C "$origin" show "master:nix/versions.json" | jq -r "$1"; }
+
+it "commits the pin and pushes it"
+out=$("$work/ci/nix/push-pin" bedrock 1.0.0.2 "$sha_b")
+assert_contains "$out" "push-pin: pushed" \
+    && assert_equals "1.0.0.2 $sha_b" "$(pinned '.bedrock | "\(.version) \(.sha256)"')" \
+    && assert_equals "Bedrock: 1.0.0.2 in nix/versions.json" "$(git -C "$origin" log -1 --format=%s master)" && pass
+
+it "pushes nothing when the pin is unchanged"
+before=$(git -C "$origin" rev-parse master)
+out=$("$work/ci/nix/push-pin" bedrock 1.0.0.2 "$sha_b")
+assert_equals "push-pin: nothing to push" "$(printf '%s' "$out" | tail -1)" \
+    && assert_equals "$before" "$(git -C "$origin" rev-parse master)" && pass
+
+it "re-applies its pin on top of whatever reached the branch first"
+# Another game's workflow pins Hytale after this checkout was made.
+git_q -C "$work/seed" pull -q origin master
+jq --indent 2 '.hytale.version = "0.9"' "$work/seed/nix/versions.json" > "$work/v" && cat "$work/v" > "$work/seed/nix/versions.json"
+git_q -C "$work/seed" commit -q -am "Hytale: 0.9 in nix/versions.json"
+git_q -C "$work/seed" push -q origin HEAD:master
+"$work/ci/nix/push-pin" bedrock 1.0.0.3 "$sha_a" >/dev/null
+assert_equals "1.0.0.3 0.9" "$(pinned '"\(.bedrock.version) \(.hytale.version)"')" \
+    && assert_equals "Hytale: 0.9 in nix/versions.json" "$(git -C "$origin" log -1 --skip=1 --format=%s master)" && pass
+
+it "tries again when its push loses a race"
+# The first push is refused, as a push behind a concurrent one is.
+cat > "$origin/hooks/pre-receive" <<'HOOK'
+#!/bin/sh
+[ -e "$GIT_DIR/refused-once" ] && exit 0
+: > "$GIT_DIR/refused-once"
+exit 1
+HOOK
+chmod +x "$origin/hooks/pre-receive"
+out=$("$work/ci/nix/push-pin" bedrock 1.0.0.4 "$sha_b" 2>&1)
+assert_contains "$out" "lost a race" && assert_contains "$out" "push-pin: pushed" \
+    && assert_equals 1.0.0.4 "$(pinned .bedrock.version)" && pass
+
+it "gives up, saying so, when it cannot push"
+printf '#!/bin/sh\nexit 1\n' > "$origin/hooks/pre-receive"
+code=0; PIN_ATTEMPTS=2 "$work/ci/nix/push-pin" bedrock 1.0.0.5 "$sha_a" >/dev/null 2>&1 || code=$?
+assert_equals 75 "$code" && assert_equals 1.0.0.4 "$(pinned .bedrock.version)" && pass
+rm -f "$origin/hooks/pre-receive"
+
 summary "versions"

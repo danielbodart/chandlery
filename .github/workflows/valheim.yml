@@ -105,6 +105,10 @@ jobs:
     needs: resolve
     if: needs.resolve.outputs.needed == 'true'
     runs-on: ubuntu-latest
+    # contents: write for the pin in nix/versions.json, pushed to master.
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -126,6 +130,7 @@ jobs:
       # metadata layer (FROM <built> + LABEL/ENV). That is the tag-and-label step,
       # done once, after we actually have the version.
       - name: Build, read the version, and push Valheim
+        id: build
         env:
           DOCKER_BUILDKIT: "1"
           BUILD_ID: ${{ needs.resolve.outputs.build_id }}
@@ -179,6 +184,9 @@ jobs:
           docker push "${IMAGE}:${version}"
           docker push "${IMAGE}:${version}-${rev}"
           docker push "${IMAGE}:latest"
+          # What the Nix package pins: the image just pushed, by its digest.
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "ref=$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:${version}")" >> "$GITHUB_OUTPUT"
 
           {
             echo "### Valheim ${version}-${rev}"
@@ -186,3 +194,21 @@ jobs:
             echo "- \`${IMAGE}:${version}-${rev}\`  (build ${BUILD_ID})"
             echo "- depot 896661 manifest gid \`${MANIFEST_GID}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The Nix package (docs/nix.md) takes the game from this image's layers:
+      # pin the image just pushed, by digest, in nix/versions.json, with the
+      # Steam build id and manifest gid it was built from. Only from master,
+      # whose image this is. A push made with GITHUB_TOKEN starts no workflow,
+      # so this cannot loop; an image rebuilt only for our own code pushes
+      # nothing.
+      - name: Pin it in nix/versions.json
+        if: github.ref == 'refs/heads/master'
+        env:
+          VERSION: ${{ steps.build.outputs.version }}
+          REF: ${{ steps.build.outputs.ref }}
+          BUILD_ID: ${{ needs.resolve.outputs.build_id }}
+          MANIFEST_GID: ${{ needs.resolve.outputs.manifest_gid }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898299+github-actions[bot]@users.noreply.github.com'
+          nix/push-pin oci valheim "$REF" "$VERSION" buildId="$BUILD_ID" manifestGid="$MANIFEST_GID"

@@ -40,3 +40,30 @@ jobs:
 
       - if: failure()
         run: docker ps -a
+
+  # The Nix flake (docs/nix.md): the packages, the native tools' Go and shell
+  # tests, nix/update-versions and nix/push-pin, and the NixOS VM tests — the
+  # units on fakes of all three games, and real Bedrock end to end. The real
+  # Hytale and Valheim, gigabytes each, are nix.yml's.
+  nix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The VM tests want KVM, which ubuntu-latest has but does not open to
+      # the runner's user.
+      - name: Open /dev/kvm
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            system-features = nixos-test benchmark big-parallel kvm
+
+      - name: nix flake check
+        run: nix flake check -L
+
