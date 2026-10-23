@@ -1,0 +1,49 @@
+#!/bin/sh
+# A stand-in for bedrock_server, for the module's VM test: run by the real
+# Bedrock adapter (images/bedrock/{run,prepare,stop-hook}) in the real unit,
+# without the 90 MB download. Like the awkward real servers, it ignores
+# SIGTERM and saves only when told `stop` on its console. A few extra console
+# commands let the test look around inside the unit's confinement.
+trap 'echo "fake-bds: ignoring SIGTERM"' TERM
+
+# It reads its port from ./server.properties, as BDS does: the staged link to
+# /data proves the operator's file (with the unit's keys) is what it sees.
+port=$(sed -n 's/^server-port=//p' server.properties)
+port6=$(sed -n 's/^server-portv6=//p' server.properties)
+echo "[INFO] Starting Server"
+echo "[INFO] Version: $BEDROCK_VERSION"
+echo "[INFO] IPv4 supported, port: $port"
+echo "[INFO] IPv6 supported, port: $port6"
+sleep "${FAKE_BDS_DELAY:-0}"
+echo "[INFO] Server started."
+
+while :; do
+    IFS= read -r line || { sleep 1; continue; }
+    case "$line" in
+        stop)
+            echo "[INFO] Server stop requested."
+            sleep 1
+            date > worlds/saved
+            echo "Quit correctly"
+            exit 0
+            ;;
+        "say "*) echo "[INFO] [Server] ${line#say }" ;;
+        "join "*) echo "[INFO] Player connected: ${line#join }, xuid: 2535412345678901" ;;
+        "leave "*) echo "[INFO] Player disconnected: ${line#leave }, xuid: 2535412345678901, pfid: x" ;;
+        crash) echo "[ERROR] crashing on purpose"; exit 3 ;;
+        probe)
+            echo "probe: ids=$(id -u):$(id -g)"
+            echo "probe: root=$(ls / | tr '\n' ' ')"
+            echo "probe: data=$(ls /data | tr '\n' ' ')"
+            echo "probe: home=$(ls /home 2>&1 | tr '\n' ' ')"
+            echo "probe: srv=$(ls /srv 2>&1 | tr '\n' ' ')"
+            echo "probe: machine-id=$(cat /etc/machine-id 2>&1)"
+            echo "probe: pid1=$(cat /proc/1/comm)"
+            echo "probe: pids=$(ls -d /proc/[0-9]* | wc -l)"
+            echo "probe: store=$(ls /nix/store | wc -l)"
+            echo "probe: cwd=$(pwd) $(readlink worlds)"
+            echo "probe: done"
+            ;;
+        *) echo "[INFO] Unknown command: $line" ;;
+    esac
+done

@@ -12,3 +12,6 @@ serverfiles/
 hytale.json
 *.hytale.json
 *.token.json
+# nix build outputs
+result
+result-*

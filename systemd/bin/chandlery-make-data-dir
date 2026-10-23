@@ -1,8 +1,9 @@
 #!/bin/sh
-# ExecStartPre=+ (as root, outside the sandbox, which needs the directory to
-# exist before it can bind it): create a server's data directory owned by its
-# user — but only if it is missing. An existing directory is never re-owned or
-# re-moded: it may be an old install's world, owned the way its owner wants.
+# Run as root before the server starts (chandlery-<name>-data-dir.service),
+# since the sandbox needs the directory to exist before it can bind it: create
+# a server's data directory owned by its user — but only if it is missing. An
+# existing directory is never re-owned or re-moded: it may be an old install's
+# world, owned the way its owner wants.
 #
 #   chandlery-make-data-dir DIR USER GROUP
 set -eu
