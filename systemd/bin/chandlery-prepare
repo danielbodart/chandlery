@@ -1,0 +1,73 @@
+#!/bin/sh
+# ExecStartPre, inside the server's sandbox: give the game the filesystem its
+# image has, then run the image's own prepare.
+#
+#   chandlery-prepare PACKAGE [--set KEY=VALUE...]
+#
+# The image has the game at /opt/<game>; natively that is the package's
+# opt/<game>, read-only in the store. A game that only reads its directory gets
+# a symlink to it (CHANDLERY_STAGE=link). One that writes into it, as Bedrock
+# does, gets a tree of real directories and symlinks into the package
+# (CHANDLERY_STAGE=copy-links) on the unit's tmpfs — the native equivalent of
+# the container's writable layer, and thrown away on stop like one. Then the
+# package's prepare, which is images/<game>/prepare unchanged, wires /data in.
+#
+# --set rewrites just those keys in the game's properties file
+# (CHANDLERY_PROPERTIES, after prepare has seeded it): how the unit sets a port
+# without owning the rest of the operator's config.
+set -eu
+
+log() { printf '[chandlery] %s\n' "$*" >&2; }
+
+[ "$#" -ge 1 ] || { echo "usage: chandlery-prepare PACKAGE [--set KEY=VALUE...]" >&2; exit 64; }
+# Resolved once, so a profile repointed under a running server cannot leave it
+# half on one version and half on another.
+pkg=$(readlink -f "$1")
+env="$pkg/lib/chandlery/game.env"
+[ -r "$env" ] || { log "$1 is not a Chandlery package: no lib/chandlery/game.env"; exit 66; }
+shift
+# shellcheck disable=SC1090
+. "$env"
+: "${GAME:?game.env sets no GAME}"
+
+# Check the arguments before touching anything.
+for arg; do
+    case "$arg" in
+        --set) ;;
+        [!=-]*=*) [ -n "${CHANDLERY_PROPERTIES:-}" ] || { log "$GAME has no properties file to set [$arg] in"; exit 64; } ;;
+        *) log "unknown argument [$arg]"; exit 64 ;;
+    esac
+done
+
+opt=${CHANDLERY_OPT:-/opt}
+game="$opt/$GAME"
+
+# A restart finds the last start's staging; it is rebuilt, never reused.
+if [ -L "$game" ]; then
+    rm -f "$game"
+elif [ -e "$game" ]; then
+    find "$game" -type d -exec chmod u+w {} +
+    rm -rf "$game"
+fi
+case "${CHANDLERY_STAGE:-link}" in
+    copy-links)
+        cp -rs "$pkg/opt/$GAME" "$game"
+        # cp copies the store's 0555 directory modes; the game writes here.
+        find "$game" -type d -exec chmod u+w {} +
+        ;;
+    link)
+        ln -s "$pkg/opt/$GAME" "$game"
+        ;;
+    *)
+        log "unknown CHANDLERY_STAGE [$CHANDLERY_STAGE] in $env"; exit 65 ;;
+esac
+
+if [ -x "$pkg/lib/chandlery/prepare" ]; then
+    "$pkg/lib/chandlery/prepare" || { rc=$?; log "prepare failed (status $rc); refusing to start"; exit "$rc"; }
+fi
+
+while [ "$#" -gt 0 ]; do
+    [ "$1" = --set ] && [ "$#" -ge 2 ] || { log "--set needs KEY=VALUE"; exit 64; }
+    chandlery-set-property "$CHANDLERY_PROPERTIES" "$2"
+    shift 2
+done

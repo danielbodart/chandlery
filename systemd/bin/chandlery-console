@@ -1,0 +1,38 @@
+#!/bin/sh
+# Type at a native Chandlery server's console — the systemd counterpart of
+# `docker exec <container> chandlery-console ...` and of `docker attach`.
+#
+#   chandlery-console <name> <command> [args...]   type one line at server <name>
+#   chandlery-console <name>                       follow its journal; each line you type is sent
+#
+# The console is the FIFO chandlery-<name>.socket holds at
+# /run/chandlery/<name>/console (mode 0600: the server's user, or root). The
+# one-line form is the image's own console.sh, pointed at that FIFO.
+set -eu
+
+usage() {
+    echo "usage: chandlery-console <name> [command [args...]]" >&2
+    exit 64
+}
+
+[ "$#" -gt 0 ] || usage
+name=$1; shift
+case "$name" in ''|.|..|*/*|-*) usage ;; esac
+
+CHANDLERY_CONSOLE="${CHANDLERY_RUNTIME_DIR:-/run/chandlery}/$name/console"
+export CHANDLERY_CONSOLE
+
+if [ "$#" -gt 0 ]; then
+    exec "${CHANDLERY_CONSOLE_SH:-@consoleSh@}" "$@"
+fi
+
+[ -p "$CHANDLERY_CONSOLE" ] || { echo "chandlery-console: no console at $CHANDLERY_CONSOLE (is chandlery-$name running?)" >&2; exit 69; }
+
+echo "[chandlery] $name: type server commands; Ctrl-C or Ctrl-D leaves, the server keeps running" >&2
+journalctl --follow --lines=20 --output=cat --unit="chandlery-$name.service" &
+follower=$!
+trap 'kill "$follower" 2>/dev/null' EXIT
+trap 'exit 0' INT TERM
+while IFS= read -r line; do
+    printf '%s\n' "$line" > "$CHANDLERY_CONSOLE"
+done

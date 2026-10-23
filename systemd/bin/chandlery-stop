@@ -1,0 +1,33 @@
+#!/bin/sh
+# ExecStop: ask the server to save and quit the way its image does, then wait
+# until it has.
+#
+#   chandlery-stop PACKAGE
+#
+# Runs the package's stop hook — images/<game>/stop-hook unchanged, typing the
+# game's own save-and-quit at the console — then waits on the lock
+# chandlery-ready holds until the game has exited and its last lines are in the
+# journal. With PrivatePIDs=yes this command cannot see the game's PID, so the
+# lock is how it knows; the hook gets no PID argument natively.
+#
+# No hook, or a hook that fails: return at once, and systemd sends KillSignal
+# (SIGINT) — as the entrypoint fell back to a signal. TimeoutStopSec bounds the
+# wait, as Docker's stop_grace_period did.
+set -eu
+
+log() { printf '[chandlery] %s\n' "$*" >&2; }
+
+[ "$#" -eq 1 ] || { echo "usage: chandlery-stop PACKAGE" >&2; exit 64; }
+pkg=$1
+hook="$pkg/lib/chandlery/stop"
+: "${CHANDLERY_LOCK:?CHANDLERY_LOCK is not set}"
+
+if [ ! -x "$hook" ]; then
+    log "no stop hook; stopping with the kill signal"
+    exit 0
+fi
+
+log "asking the server to save and quit"
+"$hook" || { rc=$?; log "stop hook failed (status $rc); stopping with the kill signal"; exit "$rc"; }
+flock "$CHANDLERY_LOCK" true
+log "server has stopped"

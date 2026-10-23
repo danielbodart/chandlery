@@ -47,7 +47,7 @@ VALHEIM_VERSION      ?= dev
 HYTALE_VERSION   ?= dev
 HYTALE_PATCHLINE ?= release
 
-.PHONY: help base bedrock valheim hytale fake-valheim fake-hytale test test-base test-bedrock test-valheim test-valheim-adapter test-hytale test-hytale-adapter clean
+.PHONY: help base bedrock valheim hytale fake-valheim fake-hytale test test-base test-bedrock test-valheim test-valheim-adapter test-hytale test-hytale-adapter test-systemd clean
 
 help:
 	@echo "make base        build the skeleton image"
@@ -57,6 +57,7 @@ help:
 	@echo "make test        build everything and run the tests"
 	@echo "make test-valheim-adapter   Valheim's adapter, without the download"
 	@echo "make test-hytale-adapter    Hytale's adapter, without a token or download"
+	@echo "make test-systemd           the native systemd tools (Go and sh, no Docker)"
 	@echo "make clean       remove the images these targets build"
 
 base:
@@ -137,7 +138,13 @@ test-base: base
 	  -t $(REGISTRY)/test-signal-server:$(TAG) test/fixtures/fake-server-nohook
 	./test/base_test.sh
 
-test: test-base test-bedrock test-valheim test-hytale-adapter
+# The native tools (systemd/): Go helpers and the shell scripts, on the host.
+# Their units run in NixOS VMs: nix flake check (docs/nix.md).
+test-systemd:
+	cd systemd && go test ./...
+	./test/systemd_test.sh
+
+test: test-base test-bedrock test-valheim test-hytale-adapter test-systemd
 
 clean:
 	-docker rmi -f $(REGISTRY)/base:$(TAG) $(REGISTRY)/bedrock:$(TAG) \

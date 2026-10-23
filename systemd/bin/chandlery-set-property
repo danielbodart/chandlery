@@ -1,0 +1,47 @@
+#!/bin/sh
+# Set keys in a Java-style .properties file (Bedrock's server.properties),
+# touching nothing else.
+#
+#   chandlery-set-property FILE KEY=VALUE [KEY=VALUE...]
+#
+# Every line that sets KEY is rewritten to KEY=VALUE; a KEY the file does not
+# have is appended. Comments, blank lines, order and every other key are left
+# exactly as they were, and the file is rewritten in place (same inode, owner
+# and mode) only if something changed — so the operator's file stays theirs, and
+# says truthfully what the server binds.
+set -eu
+
+log() { printf '[chandlery] %s\n' "$*" >&2; }
+
+[ "$#" -ge 2 ] || { echo "usage: chandlery-set-property FILE KEY=VALUE..." >&2; exit 64; }
+file=$1; shift
+[ -f "$file" ] || { log "no $file to set keys in"; exit 66; }
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+
+for kv; do
+    case "$kv" in
+        [!=]*=*) ;;
+        *) echo "chandlery-set-property: [$kv] is not KEY=VALUE" >&2; exit 64 ;;
+    esac
+    # Through the environment, not awk -v, which would interpret backslashes.
+    KEY=${kv%%=*} VALUE=${kv#*=} awk '
+        BEGIN { key = ENVIRON["KEY"]; value = ENVIRON["VALUE"]; found = 0 }
+        {
+            line = $0
+            sub(/^[ \t]+/, "", line)
+            if (index(line, key) == 1 && substr(line, length(key) + 1) ~ /^[ \t]*[=:]/) {
+                print key "=" value
+                found = 1
+                next
+            }
+            print
+        }
+        END { if (!found) print key "=" value }
+    ' "$file" > "$tmp"
+    if ! cmp -s "$tmp" "$file"; then
+        log "$(basename "$file"): $kv"
+        cat "$tmp" > "$file"
+    fi
+done
