@@ -13,7 +13,10 @@
         "x86_64-linux"
         "aarch64-linux"
       ];
-      games = [ "bedrock" ];
+      games = [
+        "bedrock"
+        "hytale"
+      ];
       forAll = f: lib.genAttrs systems (system: f system);
       pkgsFor =
         system:
@@ -28,6 +31,7 @@
       overlays.default = final: prev: {
         chandlery = {
           bedrock = final.callPackage ./nix/pkgs/bedrock.nix { };
+          hytale = final.callPackage ./nix/pkgs/hytale.nix { };
           mc-monitor = final.callPackage ./nix/pkgs/mc-monitor.nix { };
           systemd = final.callPackage ./nix/pkgs/chandlery-systemd.nix { };
         };
@@ -46,7 +50,7 @@
           default = pkgs.chandlery.systemd;
         }
         // lib.optionalAttrs (system == "x86_64-linux") {
-          inherit (pkgs.chandlery) bedrock mc-monitor;
+          inherit (pkgs.chandlery) bedrock hytale mc-monitor;
         }
       );
 
@@ -57,12 +61,20 @@
         in
         {
           inherit (self.packages.x86_64-linux) bedrock chandlery-systemd mc-monitor;
-          versions = pkgs.runCommand "chandlery-versions-test" { nativeBuildInputs = [ pkgs.jq ]; } ''
-            cp -r ${./test} test && cp -r ${./nix} nix && chmod -R u+w .
-            patchShebangs nix/update-versions
-            sh test/versions_test.sh
-            touch $out
-          '';
+          versions =
+            pkgs.runCommand "chandlery-versions-test"
+              {
+                nativeBuildInputs = [
+                  pkgs.jq
+                  pkgs.curl
+                ];
+              }
+              ''
+                cp -r ${./test} test && cp -r ${./nix} nix && chmod -R u+w .
+                patchShebangs nix/update-versions
+                sh test/versions_test.sh
+                touch $out
+              '';
           module = test ./nix/tests/module.nix;
           bedrock-vm = test ./nix/tests/bedrock.nix;
         };
