@@ -70,4 +70,79 @@ chmod 0644 "$VERSIONS_JSON"
 $update bedrock 1.0.0.3 "$sha_b" >/dev/null
 assert_equals 644 "$(stat -c %a "$VERSIONS_JSON")" && pass
 
+# ---- oci: a published image, from a registry on disk ----
+
+registry="$work/v2"
+repo=chandlery/hytale
+mkdir -p "$registry/$repo/manifests" "$registry/$repo/blobs"
+OCI_REGISTRY_URL="file://$registry"
+export OCI_REGISTRY_URL
+l() { printf 'sha256:%064d' "$1"; }
+
+# An image of four layers: a base, two of the game, our own script. Its config
+# history has empty steps between them, as a Dockerfile's ENV and LABEL do.
+publish() {  # $1 = revision, $2 = the game's top layer; prints IMAGE@DIGEST
+    cat > "$work/config" <<JSON
+{"config":{"Labels":{"org.opencontainers.image.revision":"$1"}},
+ "history":[
+  {"created_by":"# debian.tar.xz /"},
+  {"created_by":"ENV JAVA_HOME=/opt/java/openjdk","empty_layer":true},
+  {"created_by":"COPY --chown=chandlery:chandlery /buckets/00/ /opt/hytale/ # buildkit"},
+  {"created_by":"COPY --chmod=0755 images/hytale/run /usr/local/bin/hytale-server # buildkit"},
+  {"created_by":"COPY --chown=chandlery:chandlery /bin-layer/Server/ /opt/hytale/Server/ # buildkit"},
+  {"created_by":"ENV HYTALE_VERSION=0.7.4","empty_layer":true}
+ ]}
+JSON
+    config_digest="sha256:$(sha256sum "$work/config" | cut -d' ' -f1)"
+    cp "$work/config" "$registry/$repo/blobs/$config_digest"
+    cat > "$work/manifest" <<JSON
+{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json",
+ "config":{"digest":"$config_digest"},
+ "layers":[{"digest":"$(l 1)"},{"digest":"$(l 2)"},{"digest":"$(l 3)"},{"digest":"$2"}]}
+JSON
+    manifest_digest="sha256:$(sha256sum "$work/manifest" | cut -d' ' -f1)"
+    cp "$work/manifest" "$registry/$repo/manifests/$manifest_digest"
+    echo "ghcr.io/$repo@$manifest_digest"
+}
+
+it "pins an image by digest, with the layers that write its /opt/<game>, in order"
+reset
+ref=$(publish abc123 "$(l 4)")
+$update oci hytale "$ref" 0.7.4 >/dev/null
+assert_equals "0.7.4 ghcr.io/$repo ${ref#*@} abc123 $(l 2),$(l 4)" \
+    "$(jq -r '.hytale | "\(.version) \(.image) \(.digest) \(.revision) \(.layers | join(","))"' "$VERSIONS_JSON")" \
+    && assert_equals "$sha_a" "$(jq -r .bedrock.sha256 "$VERSIONS_JSON")" && pass
+
+it "leaves the pin alone for an image rebuilt only for our own code"
+touch -d '2000-01-01' "$VERSIONS_JSON"
+ref2=$(publish def456 "$(l 4)")
+out=$($update oci hytale "$ref2" 0.7.4)
+assert_equals "update-versions: hytale unchanged" "$out" \
+    && assert_equals "2000-01-01" "$(date -r "$VERSIONS_JSON" +%F)" && pass
+
+it "re-pins when the game's layers change"
+ref3=$(publish def456 "$(l 5)")
+$update oci hytale "$ref3" 0.7.5 >/dev/null
+assert_equals "0.7.5 ${ref3#*@} def456 $(l 2),$(l 5)" \
+    "$(jq -r '.hytale | "\(.version) \(.digest) \(.revision) \(.layers | join(","))"' "$VERSIONS_JSON")" && pass
+
+it "adds the game's own keys after its version"
+$update oci hytale "$ref3" 0.7.5 buildId=42 >/dev/null
+assert_equals "version buildId image digest revision layers" \
+    "$(jq -r '.hytale | keys_unsorted | join(" ")' "$VERSIONS_JSON")" \
+    && assert_equals 42 "$(jq -r .hytale.buildId "$VERSIONS_JSON")" && pass
+
+it "refuses a manifest that does not hash to the digest asked for"
+cp "$work/manifest" "$registry/$repo/manifests/$(l 9)"
+code=0; $update oci hytale "ghcr.io/$repo@$(l 9)" 0.7.6 2>/dev/null || code=$?
+assert_equals 65 "$code" && assert_equals 0.7.5 "$(jq -r .hytale.version "$VERSIONS_JSON")" && pass
+
+it "says so when the image cannot be fetched"
+code=0; $update oci hytale "ghcr.io/$repo@$(l 8)" 0.7.6 2>/dev/null || code=$?
+assert_equals 69 "$code" && pass
+
+it "refuses a reference without a digest"
+code=0; $update oci hytale "ghcr.io/$repo:0.7.6" 0.7.6 2>/dev/null || code=$?
+assert_equals 65 "$code" && pass
+
 summary "versions"

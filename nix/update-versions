@@ -4,9 +4,25 @@
 # hand. The Nix packages build exactly what this file says.
 #
 #   nix/update-versions bedrock VERSION SHA256
+#   nix/update-versions oci hytale|valheim IMAGE@DIGEST VERSION [KEY=VALUE...]
 #
 # Bedrock's pin is Mojang's zip and its sha256 — the same number the image's
 # build verifies, so the image and the Nix package are pinned together.
+#
+# Hytale's and Valheim's pin is the image CI has just pushed: its manifest
+# digest, the revision it was built from (its org.opencontainers.image.revision
+# label) and, in order, the digests of the layers that write under
+# /opt/<game> — read from the image config's history, whose non-empty steps pair
+# with the layers one to one. The package fetches exactly those layers (each
+# digest is its own Nix hash) and stacks them with systemd/bin/chandlery-unpack.
+# KEY=VALUE adds a key of the game's own (Valheim's buildId, manifestGid). The
+# manifest and config are fetched anonymously, as nix/oci.nix fetches layers;
+# OCI_REGISTRY_URL (default https://<host>/v2) points the tests at a fixture.
+#
+# An image rebuilt only for our own code moves the digest and revision but not
+# the version, the /opt layers or the extra keys; that leaves the file as it
+# was, because the package would be byte-for-byte the same, and a new pin would
+# only make Tidewaiter restart a server for nothing.
 #
 # Only jq: CI needs no Nix to bump a version. The file keeps its key order and
 # two-space indent, so a bump is one hunk per game; an unchanged pin leaves the
@@ -16,7 +32,16 @@ set -eu
 
 usage() {
     echo "usage: nix/update-versions bedrock VERSION SHA256" >&2
+    echo "       nix/update-versions oci hytale|valheim IMAGE@DIGEST VERSION [KEY=VALUE...]" >&2
     exit 64
+}
+
+# GET from the image's registry, anonymously. GHCR serves a public image to any
+# bearer; the token is the one nix/oci.nix sends.
+registry_get() {  # $1 = path below /v2/<repository>/
+    curl -fsSL -H 'Authorization: Bearer QQ==' \
+        -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+        "$registry/$repository/$1"
 }
 
 file=${VERSIONS_JSON:-$(dirname "$0")/versions.json}
@@ -38,11 +63,77 @@ case "$game" in
         filter='.bedrock = { version: $version, sha256: $sha256 }'
         set -- --arg version "$version" --arg sha256 "$sha256"
         ;;
+    oci)
+        [ "$#" -ge 3 ] || usage
+        game=$1 ref=$2 version=$3; shift 3
+        case "$game" in hytale | valheim) ;; *) usage ;; esac
+        image=${ref%@*} digest=${ref#*@}
+        if [ "$image" = "$ref" ] || ! printf '%s' "$digest" | grep -qxE 'sha256:[0-9a-f]{64}'; then
+            echo "update-versions: [$ref] is not IMAGE@sha256:DIGEST" >&2; exit 65
+        fi
+        case "$version" in
+            [0-9]*) ;;
+            *) echo "update-versions: [$version] is not a $game version" >&2; exit 65 ;;
+        esac
+        for kv; do
+            case "$kv" in
+                [!=]*=*) ;;
+                *) echo "update-versions: [$kv] is not KEY=VALUE" >&2; exit 64 ;;
+            esac
+        done
+        extras=$(printf '%s\n' "$@" | jq -cRn '[inputs | select(. != "") | capture("^(?<key>[^=]+)=(?<value>.*)$")] | from_entries')
+        host=${image%%/*} repository=${image#*/}
+        registry=${OCI_REGISTRY_URL:-https://$host/v2}
+
+        # Kept as fetched: the digest is the hash of these exact bytes.
+        oci=$(mktemp -d)
+        trap 'rm -rf "$oci"' EXIT
+        registry_get "manifests/$digest" > "$oci/manifest" \
+            || { echo "update-versions: cannot fetch $ref" >&2; exit 69; }
+        # Check it, so the pin is what was asked for and not whatever a tag says now.
+        [ "sha256:$(sha256sum < "$oci/manifest" | cut -d' ' -f1)" = "$digest" ] \
+            || { echo "update-versions: $image's manifest does not hash to $digest" >&2; exit 65; }
+        manifest=$(cat "$oci/manifest")
+        # A multi-platform index: the games are amd64 only.
+        if [ "$(printf '%s' "$manifest" | jq -r '.manifests != null')" = true ]; then
+            platform=$(printf '%s' "$manifest" | jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")][0].digest // empty')
+            [ -n "$platform" ] || { echo "update-versions: $ref has no linux/amd64 image" >&2; exit 65; }
+            manifest=$(registry_get "manifests/$platform")
+        fi
+        config=$(registry_get "blobs/$(printf '%s' "$manifest" | jq -r .config.digest)")
+
+        # The history's non-empty steps are the layers, in order. Keep each
+        # whose step names /opt/<game>; the unpacker takes only that subtree
+        # from them anyway, so a step that merely mentions it costs a download
+        # and nothing else, where one missed would lose part of the game.
+        layers=$(jq -cn --argjson m "$manifest" --argjson c "$config" --arg opt "/opt/$game" '
+            [$c.history[] | select(.empty_layer != true)] as $steps
+            | if ($steps | length) != ($m.layers | length)
+              then error("\($steps | length) non-empty history steps for \($m.layers | length) layers")
+              else [range($steps | length) as $i
+                    | select(($steps[$i].created_by // "") | test($opt + "(/|\\s|$)"))
+                    | $m.layers[$i].digest]
+              end') || { echo "update-versions: cannot pair $ref's layers with its history" >&2; exit 65; }
+        [ "$layers" != '[]' ] || { echo "update-versions: no layer of $ref writes /opt/$game" >&2; exit 65; }
+        revision=$(printf '%s' "$config" | jq -r '.config.Labels["org.opencontainers.image.revision"] // ""')
+
+        # shellcheck disable=SC2016 # jq's variables, not the shell's
+        filter='
+            .[$game] as $old
+            | if $old.version == $version and $old.layers == $layers
+                 and ($extras | to_entries | all(.value == $old[.key]))
+              then .
+              else .[$game] = ({ version: $version } + $extras
+                               + { image: $image, digest: $digest, revision: $revision, layers: $layers })
+              end'
+        set -- --arg game "$game" --arg version "$version" --argjson extras "$extras" \
+            --arg image "$image" --arg digest "$digest" --arg revision "$revision" --argjson layers "$layers"
+        ;;
     *) usage ;;
 esac
 
 tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
+trap 'rm -f "$tmp"; [ -z "${oci:-}" ] || rm -rf "$oci"' EXIT
 jq --indent 2 "$@" "$filter" "$file" > "$tmp"
 if cmp -s "$tmp" "$file"; then
     echo "update-versions: $game unchanged"
