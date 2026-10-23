@@ -77,6 +77,19 @@
               '';
           module = test ./nix/tests/module.nix;
           bedrock-vm = test ./nix/tests/bedrock.nix;
+          hytale-vm = test ./nix/tests/hytale.nix;
+        };
+
+      # Checks too heavy for every push (gigabytes of game, a 4 GB JVM): run by
+      # hand, or by CI where the runner has the disk. nix build .#heavyChecks.<name>
+      legacyPackages.x86_64-linux.heavyChecks =
+        let
+          pkgs = pkgsFor "x86_64-linux";
+          test = path: pkgs.testers.runNixOSTest (import path { inherit self; });
+        in
+        {
+          inherit (self.packages.x86_64-linux) hytale;
+          hytale-vm = test ./nix/tests/hytale-real.nix;
         };
 
       devShells = forAll (system: {

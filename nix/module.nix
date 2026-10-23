@@ -61,6 +61,38 @@ let
         }
       ];
     };
+    hytale = {
+      package = pkgs.callPackage ./pkgs/hytale.nix { };
+      packageText = "pkgs.callPackage (chandlery + \"/nix/pkgs/hytale.nix\") { }";
+      port = 5520;
+      readyPattern = "Hytale Server Booted!";
+      # QUIC.
+      ports = s: [
+        {
+          port = s.port;
+          proto = "udp";
+        }
+      ];
+      prepareArgs = s: [ ];
+      # The server's own flag, as compose's command: passed it; config.json is
+      # left to the operator.
+      args = s: [
+        "--bind"
+        "0.0.0.0:${toString s.port}"
+      ];
+      extraArgs = name: [ ];
+      # loggifly's labels from the compose files, verbatim.
+      rules = [
+        {
+          regex = "Player '(?P<player>[^']+)' joined world";
+          message = "🟢 {{ player }} joined";
+        }
+        {
+          regex = "\\[Universe\\|P\\] Removing player '(?P<player>[^']+)'";
+          message = "🔴 {{ player }} left";
+        }
+      ];
+    };
   };
 
   runDir = name: "/run/chandlery/${name}";
@@ -135,11 +167,13 @@ let
         port = mkOption {
           type = types.port;
           default = game.port;
-          defaultText = literalExpression "19132 (Bedrock)";
+          defaultText = literalExpression "19132 (Bedrock), 5520 (Hytale)";
           description = ''
             The port the server binds. Natively there is no host-side remap, so
-            servers of one game on one host each need their own. Bedrock's is set
-            by rewriting just `server-port` in `/data/server.properties`.
+            servers of one game on one host each need their own (Hytale's
+            5520, 5521, …). Bedrock's is set by rewriting just `server-port` in
+            `/data/server.properties`; Hytale's is `--bind 0.0.0.0:<port>` on its
+            command line, `config.json` untouched.
           '';
         };
 
@@ -191,14 +225,40 @@ let
           example = "/data/servers/hytale-eldermarch/machine-id";
           description = ''
             A file bound read-only over `/etc/machine-id` inside the confinement,
-            for a game that keys something off the machine's identity.
+            for a game that keys something off the machine's identity: Hytale's
+            encrypted auth store does, and without one the confined server finds
+            no machine-id at all. A file per server keeps that identity with the
+            world rather than the host.
           '';
+        };
+
+        treesinger = {
+          socket = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            example = "/run/treesinger/treesinger.sock";
+            description = ''
+              Hytale only: the unix socket of a Treesinger broker to mint this
+              server's session from at each start (`POST /v1/session`, in
+              `images/hytale/run`), into the server's own environment and never
+              on its command line. If the broker is absent or not logged in, the
+              server boots unauthenticated, with a warning. The socket's
+              directory is bound read-only into the confinement and the server
+              joins `treesinger.group`. `null`: no broker.
+            '';
+          };
+
+          group = mkOption {
+            type = types.str;
+            default = "treesinger";
+            description = "The group that may connect to `treesinger.socket`.";
+          };
         };
 
         readyPattern = mkOption {
           type = types.nullOr types.str;
           default = game.readyPattern;
-          defaultText = literalExpression ''"Server started\\." (Bedrock)'';
+          defaultText = literalExpression ''"Server started\\." (Bedrock), "Hytale Server Booted!" (Hytale)'';
           description = ''
             An RE2 matching the line the game prints when players can join: the
             unit is `Type=notify` and becomes active on it. `null` makes it
@@ -283,6 +343,7 @@ let
       # A profile, rather than the package itself: the next version is not in
       # the unit's closure, so the store is mounted whole.
       profileMode = s.packagePath != "${s.package}";
+      treesinger = s.treesinger.socket != null;
     in
     {
       description = "Chandlery ${s.game} server ${name}";
@@ -291,12 +352,16 @@ let
         "chandlery-${name}.socket"
         "chandlery-${name}-data-dir.service"
       ];
+      # After the broker is up (and, through it, the network), so the session
+      # is minted at the first try; wanted, not required: without it the
+      # server still boots, unauthenticated.
       after = [
         "chandlery-${name}.socket"
         "chandlery-${name}-data-dir.service"
         "network-online.target"
-      ];
-      wants = [ "network-online.target" ];
+      ]
+      ++ lib.optional treesinger "treesinger.service";
+      wants = [ "network-online.target" ] ++ lib.optional treesinger "treesinger.service";
       unitConfig.RequiresMountsFor = [ s.dataDir ];
 
       environment = {
@@ -304,6 +369,7 @@ let
         CHANDLERY_CONSOLE = "${run}/console";
         CHANDLERY_LOCK = "${run}/private/running";
       }
+      // lib.optionalAttrs treesinger { TREESINGER_SOCKET = s.treesinger.socket; }
       // s.environment;
 
       confinement = mkIf s.confine {
@@ -321,6 +387,9 @@ let
 
         User = s.user;
         Group = s.group;
+        # The socket's mode is the access boundary. Unmapped in the unit's user
+        # namespace (PrivateUsers), but the kernel checks the real gid.
+        SupplementaryGroups = lib.optional treesinger s.treesinger.group;
         UMask = "0022";
         EnvironmentFile = s.environmentFiles;
         WorkingDirectory = "/data";
@@ -348,6 +417,10 @@ let
             "-/etc/ssl/certs/ca-certificates.crt"
           ]
           ++ lib.optional (s.machineIdFile != null) "${s.machineIdFile}:/etc/machine-id"
+          # The directory, not the socket: a bind of the socket would pin the
+          # inode a restarted broker replaces. Optional, so a missing broker
+          # means an unauthenticated server, not a failed start.
+          ++ lib.optional treesinger "-${dirOf s.treesinger.socket}"
           ++ lib.optionals (s.confine && profileMode) [
             "/nix/store"
             "-/nix/var/nix/profiles"
@@ -558,6 +631,14 @@ in
         message = "services.chandlery.servers.${name}: a name is a unit and a path component: letters, digits, '_', '.' and '-'.";
       }) servers
       ++ lib.mapAttrsToList (name: s: {
+        assertion = s.treesinger.socket != null -> s.game == "hytale";
+        message = "services.chandlery.servers.${name}.treesinger.socket is for Hytale servers.";
+      }) servers
+      ++ lib.mapAttrsToList (name: s: {
+        assertion = s.treesinger.socket == null || lib.hasPrefix "/" s.treesinger.socket;
+        message = "services.chandlery.servers.${name}.treesinger.socket must be an absolute path.";
+      }) servers
+      ++ lib.mapAttrsToList (name: s: {
         assertion = s.notify.enable -> s.notify.appriseUrlFile != null;
         message = "services.chandlery.servers.${name}.notify.enable needs notify.appriseUrlFile.";
       }) servers;
@@ -584,7 +665,15 @@ in
         home = "/var/lib/chandlery";
       };
     };
-    users.groups = lib.mkIf (usesDefault "group" || usesDefault "user") { chandlery = { }; };
+    users.groups =
+      lib.optionalAttrs (usesDefault "group" || usesDefault "user") { chandlery = { }; }
+      # So a server can start, unauthenticated, before Treesinger is
+      # installed; Treesinger's module declares the same group.
+      // lib.listToAttrs (
+        map (s: lib.nameValuePair s.treesinger.group { }) (
+          lib.filter (s: s.treesinger.socket != null) (lib.attrValues servers)
+        )
+      );
 
     networking.firewall =
       let
