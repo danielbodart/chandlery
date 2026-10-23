@@ -38,6 +38,9 @@ for f in server.properties allowlist.json permissions.json; do
     if [ ! -e "/data/$f" ]; then
         log "seeding /data/$f from Bedrock $BEDROCK_VERSION"
         cp "$game/$f" "/data/$f"
+        # Yours to edit. A read-only game dir (the Nix store, natively) would
+        # otherwise seed a read-only copy; in the image this changes nothing.
+        chmod u+w "/data/$f"
     fi
     ln -sfn "/data/$f" "$game/$f"
 done
