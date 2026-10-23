@@ -190,4 +190,63 @@ mkdir -p "$work/world"; chmod 0705 "$work/world"
 chandlery-make-data-dir "$work/world" nobody nogroup
 assert_equals 705 "$(stat -c '%a' "$work/world")" && pass
 
+# ---- chandlery-unpack ----
+
+# Image layers as Docker writes them: tars of the paths each step changed, one
+# gzip'd, one not, with whiteouts for what a later step deleted.
+layers="$work/layers"
+mkdir -p "$layers/1/opt/game/dir" "$layers/1/usr/bin" "$layers/2/opt/game/dir" "$layers/2/opt/game/new"
+echo a > "$layers/1/opt/game/a"
+echo b > "$layers/1/opt/game/dir/b"
+echo gone > "$layers/1/opt/game/gone"
+echo other > "$layers/1/usr/bin/other"
+chmod 0600 "$layers/1/opt/game/a"
+ln -s a "$layers/1/opt/game/link"
+tar -czf "$layers/1.tar.gz" -C "$layers/1" opt usr
+: > "$layers/2/opt/game/.wh.gone"
+: > "$layers/2/opt/game/dir/.wh..wh..opq"
+echo c > "$layers/2/opt/game/dir/c"
+echo d > "$layers/2/opt/game/new/d"
+tar -cf "$layers/2.tar" -C "$layers/2" opt
+mkdir -p "$layers/3"
+echo x > "$layers/3/elsewhere"
+tar -cf "$layers/3.tar" -C "$layers/3" elsewhere
+
+it "stacks the layers in order, keeping only the subtree"
+chandlery-unpack --blobs "$work/unpacked" opt/game "$layers/1.tar.gz" "$layers/2.tar" "$layers/3.tar"
+assert_equals "opt/game/a
+opt/game/dir/c
+opt/game/link
+opt/game/new/d" "$(cd "$work/unpacked" && find . \( -type f -o -type l \) | sed 's|^\./||' | sort)" \
+    && assert_equals a "$(cat "$work/unpacked/opt/game/link")" && pass
+
+it "honours whiteouts: a deleted file, and an opaque directory"
+if [ -e "$work/unpacked/opt/game/gone" ] || [ -e "$work/unpacked/opt/game/dir/b" ] \
+    || [ -e "$work/unpacked/opt/game/.wh.gone" ]; then
+    fail "whiteouts left behind: $(find "$work/unpacked")"
+else
+    pass
+fi
+
+it "leaves the tree readable by whoever the game runs as"
+assert_equals 644 "$(stat -c '%a' "$work/unpacked/opt/game/a")" && pass
+
+mkdir -p "$layers/evil/opt/game"
+ln -s /etc "$layers/evil/opt/game/etc"
+tar -cf "$layers/evil-link.tar" -C "$layers/evil" opt
+printf 'x' > "$layers/x"
+tar -cf "$layers/evil-dots.tar" -C "$layers" --transform 's|^x$|opt/game/../../x|' x
+
+it "refuses a layer that links out of the tree"
+code=0; chandlery-unpack --blobs "$work/evil1" opt/game "$layers/evil-link.tar" 2>/dev/null || code=$?
+assert_equals 65 "$code" && pass
+
+it "refuses a layer that names a '..'"
+code=0; chandlery-unpack --blobs "$work/evil2" opt/game "$layers/evil-dots.tar" 2>/dev/null || code=$?
+assert_equals 65 "$code" && [ ! -e "$work/x" ] && pass
+
+it "refuses a subtree that is not below the image's root"
+code=0; chandlery-unpack --blobs "$work/evil3" ../opt "$layers/2.tar" 2>/dev/null || code=$?
+assert_equals 64 "$code" && pass
+
 summary "systemd tools"

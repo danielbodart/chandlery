@@ -1,0 +1,75 @@
+#!/bin/sh
+# Lay a game's tree out of a published image's layers, as Docker would have
+# stacked them, without Docker: how the Nix packages take Hytale and Valheim
+# from GHCR (nix/oci.nix), which have already done the OAuth-gated or
+# Steam-licensed fetch.
+#
+#   chandlery-unpack --blobs DEST SUBTREE BLOB...
+#
+# Applies each layer BLOB (a tar, gzip'd or zstd'd — GNU tar tells which), in
+# order, keeping only what it writes under SUBTREE (e.g. opt/hytale), into
+# DEST/SUBTREE. Whiteouts are honoured as overlayfs would: `.wh.NAME` deletes
+# NAME from the layers below, `.wh..wh..opq` empties its directory first. A
+# layer that names an absolute path or a `..`, or leaves a symlink pointing out
+# of DEST, is refused — with nothing of DEST trusted until the end.
+#
+# Ownership and modes beyond the owner's are not kept (the image normalised
+# them for a user that does not exist here), nor are mtimes.
+set -eu
+
+log() { printf '[chandlery-unpack] %s\n' "$*" >&2; }
+usage() { echo "usage: chandlery-unpack --blobs DEST SUBTREE BLOB..." >&2; exit 64; }
+
+[ "$#" -ge 4 ] && [ "$1" = --blobs ] || usage
+dest=$2 subtree=${3%/}; shift 3
+case "$subtree" in
+    *[!A-Za-z0-9_./-]* | /* | .. | ../* | */.. | */../* | '' | .) log "[$subtree] is not a relative path below the image's root"; exit 64 ;;
+esac
+
+mkdir -p "$dest/$subtree"
+root=$(cd "$dest" && pwd -P)
+list=$(mktemp)
+trap 'rm -f "$list"' EXIT
+
+n=0
+for blob; do
+    n=$((n + 1))
+    [ -r "$blob" ] || { log "no layer $blob"; exit 66; }
+    tar -tf "$blob" > "$list"
+    # Every name in the layer, not just ours: a layer that tries to climb out
+    # is not one to take anything from.
+    if grep -qE '^/|(^|/)\.\.(/|$)' "$list"; then
+        log "layer $n ($blob) names an absolute path or '..'; refusing it"
+        exit 65
+    fi
+    # Docker writes no leading ./, but a hand-made tar might.
+    member=$subtree
+    grep -qE "^\./$subtree(/|\$)" "$list" && member=./$subtree
+    ours=$(sed 's|^\./||' "$list" | grep -E "^$subtree(/|\$)" || true)
+    [ -n "$ours" ] || continue
+
+    # Whiteouts first: they are about the layers below, not this one.
+    printf '%s\n' "$ours" | grep -E '(^|/)\.wh\.[^/]*$' | while IFS= read -r wh; do
+        dir=$(dirname "$wh") name=$(basename "$wh")
+        if [ "$name" != .wh..wh..opq ]; then
+            rm -rf "${root:?}/$dir/${name#.wh.}"
+        elif [ -d "$root/$dir" ]; then
+            find "$root/$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+        fi
+    done
+
+    # Just our subtree, and not the whiteout markers: they are not the tree.
+    tar -xf "$blob" -C "$root" --no-same-owner --no-same-permissions --touch \
+        --exclude='.wh.*' "$member"
+
+    # A link this layer made that leads out of DEST would let the next layer
+    # write through it.
+    find "$root/$subtree" -type l | while IFS= read -r link; do
+        case "$(realpath -m -- "$link")" in
+            "$root" | "$root"/*) ;;
+            *) log "layer $n ($blob) links $link out of $dest; refusing it"; exit 65 ;;
+        esac
+    done
+done
+# Directories made readable for everyone the game runs as, as the image's were.
+chmod -R u+w,go+rX "$root/$subtree"

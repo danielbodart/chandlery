@@ -11,6 +11,9 @@
   gawk,
   diffutils,
   flock,
+  gnutar,
+  gzip,
+  zstd,
 }:
 
 buildGoModule {
@@ -50,11 +53,26 @@ buildGoModule {
         ]
       }:$out/bin
     done
+    # Not run by any unit, so its tar and decompressors stay out of the
+    # servers' confinement.
+    wrapProgram $out/bin/chandlery-unpack --prefix PATH : ${
+      lib.makeBinPath [
+        coreutils
+        findutils
+        gnutar
+        gzip
+        zstd
+      ]
+    }
   '';
 
   # The shell half's tests, against what was just installed.
   doInstallCheck = true;
-  nativeInstallCheckInputs = [ flock ];
+  nativeInstallCheckInputs = [
+    flock
+    gnutar
+    gzip
+  ];
   installCheckPhase = ''
     runHook preInstallCheck
     CHANDLERY_TOOLS=$out/bin CHANDLERY_CONSOLE_SH=$out/libexec/chandlery/console \
