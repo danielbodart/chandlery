@@ -459,6 +459,10 @@ let
             "-/etc/localtime"
             "-/etc/zoneinfo"
             "-/etc/ssl/certs/ca-certificates.crt"
+            # BDS's static OpenSSL was built with OPENSSLDIR=/etc/ssl, so it
+            # reads its CAs from /etc/ssl/cert.pem: without one it cannot sign
+            # in to Minecraft services, and stops.
+            "-/etc/ssl/certs/ca-certificates.crt:/etc/ssl/cert.pem"
             # Its own user's entry, as the image's /etc/passwd has it, and no
             # one else's (chandlery-<name>-data-dir writes them): Unity
             # (Valheim) dereferences getpwuid(getuid()) unchecked, and segfaults

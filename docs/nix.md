@@ -117,7 +117,7 @@ its own directory (Bedrock) and `link` for one that does not.
 | `/run/chandlery/<n>` | itself: `console` (FIFO) and `private/` | rw |
 | `/etc/machine-id` | `machineIdFile`, when set | ro |
 | `/run/treesinger` | itself, when `treesinger.socket` is set, `-`optional | ro |
-| `/etc/{resolv.conf,hosts,nsswitch.conf,localtime}`, `/etc/ssl/certs/ca-certificates.crt` | host / `cacert` | ro |
+| `/etc/{resolv.conf,hosts,nsswitch.conf,localtime}`, `/etc/ssl/certs/ca-certificates.crt`, and that bundle again at `/etc/ssl/cert.pem`, where BDS's static OpenSSL looks (without it Bedrock cannot reach Minecraft services and stops; the VM tests, offline, never see it) | host / `cacert` | ro |
 | `/etc/{passwd,group}` | `/run/chandlery/<name>/etc/`, written by `chandlery-<name>-data-dir` from the host's entries | ro — just the server's own user (home `/data`) and groups, no other account. Unity (Valheim) dereferences `getpwuid(getuid())` unchecked and segfaults without its user's entry, found by `tests/valheim-real.nix`; the image has one too |
 | `/nix/store/...` | the unit's closure (`confinement.mode = "full-apivfs"`) | ro |
 | `/proc`, `/sys`, `/dev`, `/tmp` | API VFS, `PrivateTmp`, `PrivateDevices` | — |
