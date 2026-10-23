@@ -16,6 +16,7 @@
       games = [
         "bedrock"
         "hytale"
+        "valheim"
       ];
       forAll = f: lib.genAttrs systems (system: f system);
       pkgsFor =
@@ -32,6 +33,8 @@
         chandlery = {
           bedrock = final.callPackage ./nix/pkgs/bedrock.nix { };
           hytale = final.callPackage ./nix/pkgs/hytale.nix { };
+          valheim = final.callPackage ./nix/pkgs/valheim.nix { };
+          a2s = final.callPackage ./nix/pkgs/chandlery-a2s.nix { };
           mc-monitor = final.callPackage ./nix/pkgs/mc-monitor.nix { };
           systemd = final.callPackage ./nix/pkgs/chandlery-systemd.nix { };
         };
@@ -50,7 +53,13 @@
           default = pkgs.chandlery.systemd;
         }
         // lib.optionalAttrs (system == "x86_64-linux") {
-          inherit (pkgs.chandlery) bedrock hytale mc-monitor;
+          inherit (pkgs.chandlery)
+            bedrock
+            hytale
+            valheim
+            mc-monitor
+            ;
+          chandlery-a2s = pkgs.chandlery.a2s;
         }
       );
 
@@ -60,7 +69,12 @@
           test = path: pkgs.testers.runNixOSTest (import path { inherit self; });
         in
         {
-          inherit (self.packages.x86_64-linux) bedrock chandlery-systemd mc-monitor;
+          inherit (self.packages.x86_64-linux)
+            bedrock
+            chandlery-systemd
+            chandlery-a2s
+            mc-monitor
+            ;
           versions =
             pkgs.runCommand "chandlery-versions-test"
               {
@@ -88,7 +102,7 @@
           test = path: pkgs.testers.runNixOSTest (import path { inherit self; });
         in
         {
-          inherit (self.packages.x86_64-linux) hytale;
+          inherit (self.packages.x86_64-linux) hytale valheim;
           hytale-vm = test ./nix/tests/hytale-real.nix;
         };
 

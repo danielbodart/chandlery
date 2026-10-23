@@ -9,7 +9,9 @@
 {
   lib,
   fetchurl,
+  stdenv,
   stdenvNoCC,
+  autoPatchelfHook,
   gnutar,
   gzip,
   zstd,
@@ -24,6 +26,12 @@
   layers,
   # e.g. "opt/hytale"
   subtree,
+  # For a game of native code built for a distribution's FHS (Valheim): the
+  # libraries to autoPatchelf its ELF files against, in this same derivation,
+  # so the tree is not stored twice. null: the files as the image has them.
+  elfDeps ? null,
+  # Library names autoPatchelf may leave unresolved (dlopen'd, or never loaded).
+  elfIgnoreMissing ? [ ],
 }:
 
 let
@@ -45,24 +53,36 @@ let
         "Authorization: Bearer QQ=="
       ];
     };
+  patch = elfDeps != null;
 in
-stdenvNoCC.mkDerivation {
-  inherit pname version;
+(if patch then stdenv else stdenvNoCC).mkDerivation (
+  {
+    inherit pname version;
 
-  nativeBuildInputs = [
-    gnutar
-    gzip
-    zstd
-  ];
+    nativeBuildInputs = [
+      gnutar
+      gzip
+      zstd
+    ]
+    ++ lib.optional patch autoPatchelfHook;
 
-  buildCommand = ''
-    sh ${../systemd/bin/chandlery-unpack} --blobs $out ${lib.escapeShellArg subtree} ${lib.escapeShellArgs (map fetchLayer layers)}
-  '';
+    buildCommand = ''
+      sh ${../systemd/bin/chandlery-unpack} --blobs $out ${lib.escapeShellArg subtree} ${lib.escapeShellArgs (map fetchLayer layers)}
+    ''
+    + lib.optionalString patch ''
+      autoPatchelf -- $out
+    '';
 
-  # Gigabytes of someone else's files: nothing to patch, strip or check.
-  dontFixup = true;
+    # Gigabytes of someone else's files: nothing to strip or check, and what
+    # needs patching is patched above.
+    dontFixup = true;
 
-  passthru = {
-    inherit image layers subtree;
-  };
-}
+    passthru = {
+      inherit image layers subtree;
+    };
+  }
+  // lib.optionalAttrs patch {
+    buildInputs = elfDeps;
+    autoPatchelfIgnoreMissingDeps = elfIgnoreMissing;
+  }
+)
