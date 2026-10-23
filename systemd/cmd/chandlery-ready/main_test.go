@@ -216,7 +216,7 @@ func TestMatchesLinesSplitAcrossReads(t *testing.T) {
 	var got []string
 	done := make(chan struct{})
 	go func() {
-		copyLines(r, &bytes.Buffer{}, regexp.MustCompile(`^Server started\.$`), func(l string) { got = append(got, l) })
+		copyLines(r, &bytes.Buffer{}, []watch{{regexp.MustCompile(`^Server started\.$`), func(l string) { got = append(got, l) }}})
 		close(done)
 	}()
 	w.Write([]byte("Server st"))
@@ -226,6 +226,54 @@ func TestMatchesLinesSplitAcrossReads(t *testing.T) {
 	<-done
 	if len(got) != 1 || got[0] != "Server started." {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// Bedrock's shape: a console reader the game waits for before it will exit,
+// on a console that never reaches end-of-file (the socket unit holds its FIFO
+// open). Lines typed before the stop still reach the game; its own stop line
+// then gives it end-of-file, and it exits.
+func TestEndsTheConsoleWhenTheGameStopsItself(t *testing.T) {
+	console, typing, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer typing.Close()
+	cmd := command(t, "--stopping", `Server stop requested\.`, "--",
+		"sh", "-c", `read -r line; echo "typed: $line"; echo 'Server stop requested.'; cat >/dev/null; echo 'Quit correctly'`)
+	cmd.Stdin = console
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	console.Close()
+	typing.Write([]byte("say hello\n"))
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		cmd.Process.Kill()
+		t.Fatalf("still running with the console open; output %q", out.String())
+	}
+	if want := "typed: say hello\nServer stop requested.\nQuit correctly\n"; out.String() != want {
+		t.Fatalf("got %q, want %q", out.String(), want)
+	}
+}
+
+func TestTakesTheStoppingPatternFromGameEnv(t *testing.T) {
+	env := filepath.Join(t.TempDir(), "game.env")
+	os.WriteFile(env, []byte("CHANDLERY_READY='Server started\\.'\nCHANDLERY_STOPPING='Server stop requested\\.'\n"), 0o644)
+	o, err := parseArgs([]string{"--game-env", env, "--", "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.pattern.String() != `Server started\.` || o.stopping.String() != `Server stop requested\.` {
+		t.Fatalf("got %v and %v", o.pattern, o.stopping)
 	}
 }
 

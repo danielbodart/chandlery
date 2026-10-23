@@ -28,6 +28,10 @@ let
       packageText = "pkgs.callPackage (chandlery + \"/nix/pkgs/bedrock.nix\") { }";
       port = 19132;
       readyPattern = "Server started\\.";
+      # What BDS prints as it starts to shut down, however it was asked to:
+      # it then waits for its console reader, which needs end-of-file to
+      # return (chandlery-ready --stopping).
+      stoppingPattern = "Server stop requested\\.";
       # BDS insists on an IPv6 socket too.
       ports = s: [
         {
@@ -492,6 +496,10 @@ let
             ++ lib.optionals (s.readyPattern != null) [
               "--pattern"
               s.readyPattern
+            ]
+            ++ lib.optionals (game ? stoppingPattern) [
+              "--stopping"
+              game.stoppingPattern
             ]
             ++ [
               "--"

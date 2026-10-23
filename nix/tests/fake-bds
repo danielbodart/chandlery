@@ -31,6 +31,18 @@ while :; do
         "join "*) echo "[INFO] Player connected: ${line#join }, xuid: 2535412345678901" ;;
         "leave "*) echo "[INFO] Player disconnected: ${line#leave }, xuid: 2535412345678901, pfid: x" ;;
         crash) echo "[ERROR] crashing on purpose"; exit 3 ;;
+        selfstop)
+            # BDS stopping of its own accord (Minecraft services out of
+            # reach, an operator's /stop in game): it saves, then will not
+            # exit until its console reader has returned, which takes a line
+            # or end-of-file -- and the console FIFO, held open by the socket
+            # unit, never reaches end-of-file by itself.
+            echo "[INFO] Server stop requested."
+            date > worlds/saved
+            cat > /dev/null
+            echo "Quit correctly"
+            exit 0
+            ;;
         probe)
             echo "probe: ids=$(id -u):$(id -g)"
             echo "probe: root=$(ls / | tr '\n' ' ')"

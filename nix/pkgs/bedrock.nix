@@ -26,6 +26,7 @@ let
   pin = (lib.importJSON ../versions.json).bedrock;
   fake = game != null;
   readyPattern = "Server started\\.";
+  stoppingPattern = "Server stop requested\\.";
 in
 stdenv.mkDerivation {
   pname = "chandlery-bedrock";
@@ -98,6 +99,7 @@ stdenv.mkDerivation {
     GAME=bedrock
     BEDROCK_VERSION=$version
     CHANDLERY_READY='${readyPattern}'
+    CHANDLERY_STOPPING='${stoppingPattern}'
     CHANDLERY_STAGE=copy-links
     CHANDLERY_PROPERTIES=/data/server.properties
     ENV

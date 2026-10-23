@@ -1,6 +1,6 @@
 // chandlery-ready: run a game server under systemd's Type=notify.
 //
-//	chandlery-ready [--pattern REGEX | --game-env FILE] [--lock FILE] -- COMMAND [ARGS...]
+//	chandlery-ready [--pattern REGEX] [--stopping REGEX] [--game-env FILE] [--lock FILE] -- COMMAND [ARGS...]
 //
 // systemd can only call a server "started" when something tells it so, and a
 // game never does. This stands between the two: it starts COMMAND as its child,
@@ -17,6 +17,15 @@
 // KillSignal reaches the game directly through the cgroup — keeps draining until
 // the child is gone, reaps orphans as PID 1 must, and exits with the child's
 // status (128+n for a signal).
+//
+// --stopping is the line the game prints when it starts to shut down, of its own
+// accord or told to. Given one, the game's stdin is a pipe this copies the
+// console into, closed on that line. Bedrock needs it: it will not finish
+// exiting until the thread reading its console returns, and the console FIFO,
+// which the socket unit holds open read-write, never reaches end-of-file. Told
+// `stop` at the console that read has just returned; stopping itself — unable
+// to reach Minecraft services, or an operator's /stop in game — it would wait
+// for the next line forever.
 //
 // --lock holds an exclusive flock on FILE until the child has exited and its
 // output is in the journal: what chandlery-stop waits on, since with
@@ -36,6 +45,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -52,16 +62,17 @@ const maxLine = 64 * 1024
 const prSetChildSubreaper = 36
 
 type options struct {
-	pattern *regexp.Regexp
-	lock    string
-	argv    []string
+	pattern  *regexp.Regexp
+	stopping *regexp.Regexp
+	lock     string
+	argv     []string
 }
 
 func main() {
 	opts, err := parseArgs(os.Args[1:])
 	if err != nil {
 		logf("%v", err)
-		fmt.Fprintln(os.Stderr, "usage: chandlery-ready [--pattern REGEX | --game-env FILE] [--lock FILE] -- COMMAND [ARGS...]")
+		fmt.Fprintln(os.Stderr, "usage: chandlery-ready [--pattern REGEX] [--stopping REGEX] [--game-env FILE] [--lock FILE] -- COMMAND [ARGS...]")
 		os.Exit(64)
 	}
 	os.Exit(run(opts, os.Stdout))
@@ -72,7 +83,8 @@ func parseArgs(args []string) (options, error) {
 	fs := flag.NewFlagSet("chandlery-ready", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	pattern := fs.String("pattern", "", "RE2 matching the line the game prints when it is up")
-	gameEnv := fs.String("game-env", "", "a package's lib/chandlery/game.env, whose CHANDLERY_READY is the pattern")
+	stopping := fs.String("stopping", "", "RE2 matching the line the game prints when it starts to shut down")
+	gameEnv := fs.String("game-env", "", "a package's lib/chandlery/game.env, whose CHANDLERY_READY and CHANDLERY_STOPPING are the patterns")
 	fs.StringVar(&o.lock, "lock", "", "hold an exclusive flock on this file until the child has exited")
 	if err := fs.Parse(args); err != nil {
 		return o, err
@@ -82,22 +94,38 @@ func parseArgs(args []string) (options, error) {
 		return o, errors.New("no command given")
 	}
 
-	expr := *pattern
-	if expr == "" && *gameEnv != "" {
+	expr, stop := *pattern, *stopping
+	if *gameEnv != "" && (expr == "" || stop == "") {
 		env, err := readEnvFile(*gameEnv)
 		if err != nil {
 			return o, err
 		}
-		expr = env["CHANDLERY_READY"]
-	}
-	if expr != "" {
-		re, err := regexp.Compile(expr)
-		if err != nil {
-			return o, fmt.Errorf("bad pattern %q: %v", expr, err)
+		if expr == "" {
+			expr = env["CHANDLERY_READY"]
 		}
-		o.pattern = re
+		if stop == "" {
+			stop = env["CHANDLERY_STOPPING"]
+		}
+	}
+	var err error
+	if o.pattern, err = compile(expr); err != nil {
+		return o, err
+	}
+	if o.stopping, err = compile(stop); err != nil {
+		return o, err
 	}
 	return o, nil
+}
+
+func compile(expr string) (*regexp.Regexp, error) {
+	if expr == "" {
+		return nil, nil
+	}
+	re, err := regexp.Compile(expr)
+	if err != nil {
+		return nil, fmt.Errorf("bad pattern %q: %v", expr, err)
+	}
+	return re, nil
 }
 
 func run(o options, out io.Writer) int {
@@ -136,9 +164,23 @@ func run(o options, out io.Writer) int {
 		logf("%v", err)
 		return 71
 	}
+	stdin, closeStdin := os.Stdin, func() {}
+	if o.stopping != nil {
+		sr, sw, err := os.Pipe()
+		if err != nil {
+			logf("%v", err)
+			return 71
+		}
+		defer sr.Close()
+		stdin = sr
+		// Left blocked on the console once the game has gone: exiting ends it.
+		go io.Copy(sw, os.Stdin)
+		var once sync.Once
+		closeStdin = func() { once.Do(func() { sw.Close() }) }
+	}
 	child, err := os.StartProcess(path, o.argv, &os.ProcAttr{
 		Env:   childEnv(),
-		Files: []*os.File{os.Stdin, w, w},
+		Files: []*os.File{stdin, w, w},
 	})
 	w.Close()
 	if err != nil {
@@ -148,7 +190,10 @@ func run(o options, out io.Writer) int {
 
 	drained := make(chan struct{})
 	go func() {
-		copyLines(r, out, o.pattern, ready)
+		copyLines(r, out, []watch{
+			{o.pattern, ready},
+			{o.stopping, func(string) { closeStdin() }},
+		})
 		close(drained)
 	}()
 
@@ -199,10 +244,23 @@ func reap(pid int) int {
 	}
 }
 
-// copyLines copies r to out byte for byte and calls onMatch once, with the
-// line, the first time a complete line matches pattern.
-func copyLines(r io.Reader, out io.Writer, pattern *regexp.Regexp, onMatch func(string)) {
-	matched := pattern == nil
+// A line to look out for: onMatch is called once, with the line, the first
+// time a complete line matches pattern. A nil pattern is never looked for.
+type watch struct {
+	pattern *regexp.Regexp
+	onMatch func(string)
+}
+
+// copyLines copies r to out byte for byte, calling each watch's onMatch on its
+// first matching line.
+func copyLines(r io.Reader, out io.Writer, watches []watch) {
+	waiting := 0
+	for _, w := range watches {
+		if w.pattern != nil {
+			waiting++
+		}
+	}
+	matched := make([]bool, len(watches))
 	var line []byte
 	buf := make([]byte, 32*1024)
 	for {
@@ -210,7 +268,7 @@ func copyLines(r io.Reader, out io.Writer, pattern *regexp.Regexp, onMatch func(
 		if n > 0 {
 			chunk := buf[:n]
 			out.Write(chunk)
-			for !matched && len(chunk) > 0 {
+			for waiting > 0 && len(chunk) > 0 {
 				i := bytes.IndexByte(chunk, '\n')
 				if i < 0 {
 					line = appendCapped(line, chunk)
@@ -220,9 +278,12 @@ func copyLines(r io.Reader, out io.Writer, pattern *regexp.Regexp, onMatch func(
 				chunk = chunk[i+1:]
 				text := strings.TrimRight(string(line), "\r")
 				line = line[:0]
-				if pattern.MatchString(text) {
-					matched = true
-					onMatch(text)
+				for j, w := range watches {
+					if w.pattern != nil && !matched[j] && w.pattern.MatchString(text) {
+						matched[j] = true
+						waiting--
+						w.onMatch(text)
+					}
 				}
 			}
 		}

@@ -200,6 +200,15 @@ in
         assert "server has already exited" in log, log
         machine.succeed("systemctl stop chandlery-alpha.socket")
 
+    with subtest("stopping itself, it is given end-of-file on its console and exits"):
+        before = journal("alpha")
+        machine.succeed("systemctl start chandlery-alpha.service")
+        machine.succeed("chandlery-console alpha selfstop")
+        machine.wait_until_fails("systemctl is-active chandlery-alpha.service", timeout=30)
+        log = journal("alpha")[len(before):]
+        assert "Quit correctly" in log, log
+        machine.succeed("systemctl stop chandlery-alpha.socket")
+
     with subtest("a crash restarts it"):
         machine.succeed("systemctl start chandlery-alpha.service")
         before = show("alpha", "MainPID")

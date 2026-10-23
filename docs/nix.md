@@ -225,6 +225,17 @@ chandlery-ready [--pattern REGEX] -- COMMAND [ARGS…]
 - Starts `COMMAND` as its child with **stdin inherited** (the FIFO) and stdout
   and stderr on a pipe; copies every line to its own stdout (the journal)
   unchanged.
+- With `--stopping` (default `CHANDLERY_STOPPING` from `game.env`), the
+  child's stdin is a pipe it copies the FIFO into, closed on the first line
+  matching that pattern. Bedrock (`Server stop requested\.`) will not exit
+  until its console reader thread returns, and the FIFO never reaches
+  end-of-file, since the socket unit holds it open read-write. Told `stop` at
+  the console, the read has just returned, but stopping of its own accord
+  (Minecraft services out of reach, an operator's `/stop` in game) it waited
+  for a next line that never came: every thread but the reader parked on a
+  futex, the reader in `pipe_read` on fd 0, until `TimeoutStartSec` killed it
+  15 minutes later. Found live; `tests/module.nix` has the shape (`selfstop`
+  in `fake-bds`).
 - On the first line matching the pattern (RE2; default `CHANDLERY_READY` from
   the package's `game.env`) sends `READY=1` to `$NOTIFY_SOCKET` itself (a unix
   datagram — no `systemd-notify` fork, no dependency on systemd's binaries).

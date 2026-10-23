@@ -329,6 +329,7 @@ it "writes game.env from the image's ENV, without its Debian's, and the game's r
 assert_equals "GAME=bedrock
 GAME_VERSION='1.2.3'
 CHANDLERY_READY='Server started\.'
+CHANDLERY_STOPPING='Server stop requested\.'
 CHANDLERY_STAGE=copy-links
 CHANDLERY_PROPERTIES=/data/server.properties
 CHANDLERY_IMAGE='$ref'" "$(cat "$p/lib/chandlery/game.env")" && pass

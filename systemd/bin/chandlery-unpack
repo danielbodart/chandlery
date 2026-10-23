@@ -40,7 +40,7 @@ usage() {
 # the file its ports are set in.
 game_env() {
     case "$1" in
-        bedrock) printf '%s\n' "CHANDLERY_READY='Server started\.'" CHANDLERY_STAGE=copy-links CHANDLERY_PROPERTIES=/data/server.properties ;;
+        bedrock) printf '%s\n' "CHANDLERY_READY='Server started\.'" "CHANDLERY_STOPPING='Server stop requested\.'" CHANDLERY_STAGE=copy-links CHANDLERY_PROPERTIES=/data/server.properties ;;
         hytale) printf '%s\n' "CHANDLERY_READY='Hytale Server Booted!'" CHANDLERY_STAGE=link ;;
         valheim) printf '%s\n' "CHANDLERY_READY='Opened (Steam|PlayFab) server'" CHANDLERY_STAGE=link ;;
     esac
