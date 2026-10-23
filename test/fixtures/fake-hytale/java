@@ -1,10 +1,13 @@
 #!/bin/sh
 # A stand-in for `java`, which the real hytale/run execs. It prints the
 # arguments it was handed (so argument assembly is testable), then idles on the
-# console FIFO until it reads `stop` — the way a console-driven server would —
+# console FIFO until it reads `/stop` — the way a console-driven server would —
 # saving on the way out. It also saves on SIGTERM/SIGINT, so a missing or wrong
 # stop path shows up as a killed container rather than a clean one.
 echo "fake-java: args $*"
+# Which session the adapter handed over, if any: tokens belong in the
+# environment, and this is where a test sees that they arrived.
+echo "fake-java: session ${HYTALE_SERVER_SESSION_TOKEN:-none} identity ${HYTALE_SERVER_IDENTITY_TOKEN:-none}"
 echo "fake-hytale: listening"
 trap 'echo "fake-hytale: saving world"; echo "fake-hytale: shut down"; exit 0' TERM INT
 while IFS= read -r line; do

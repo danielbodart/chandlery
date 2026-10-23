@@ -78,6 +78,51 @@ if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
     assert_contains "$logs" "could not reach Treesinger" && pass
 fi
 
+it "boots unauthenticated, with a warning, when the Treesinger socket is absent"
+# TREESINGER_SOCKET is how a native unit reaches the broker (docs/nix.md); the
+# same degradation as an unreachable URL.
+run_fake -e TREESINGER_SOCKET=/run/treesinger/treesinger.sock
+if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
+    logs=$(docker logs "$CONTAINER" 2>&1)
+    assert_contains "$logs" "could not reach Treesinger at /run/treesinger/treesinger.sock" && pass
+fi
+
+it "mints a session over the Treesinger socket, into the environment and not argv"
+# A broker on a unix socket on the host, bound in as the native unit binds
+# /run/treesinger: POST /v1/session answers with a session, as Treesinger does.
+broker_dir=$(mktemp -d)
+chmod 0755 "$broker_dir"
+python3 - "$broker_dir/treesinger.sock" <<'PY' &
+import http.server, os, socketserver, sys
+class Broker(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = b'{"sessionToken":"sess.from.socket","identityToken":"id.from.socket"}'
+        self.send_response(200 if self.path == "/v1/session" else 404)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args): pass
+class Server(socketserver.UnixStreamServer):
+    def get_request(self):
+        return self.socket.accept()[0], ("unix", 0)
+server = Server(sys.argv[1], Broker)
+os.chmod(sys.argv[1], 0o777)
+server.serve_forever()
+PY
+broker=$!
+waited=0
+while [ ! -S "$broker_dir/treesinger.sock" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
+run_fake -v "$broker_dir:/run/treesinger" -e TREESINGER_SOCKET=/run/treesinger/treesinger.sock
+if wait_for_log "$CONTAINER" "fake-hytale: listening"; then
+    logs=$(docker logs "$CONTAINER" 2>&1)
+    args=$(printf '%s\n' "$logs" | sed -n 's/^fake-java: args //p')
+    assert_contains "$logs" "authenticated via Treesinger (/run/treesinger/treesinger.sock)" \
+        && assert_contains "$logs" "fake-java: session sess.from.socket identity id.from.socket" \
+        && refute_contains "$args" "from.socket" && pass
+fi
+kill "$broker" 2>/dev/null || true
+rm -rf "$broker_dir"
+
 it "extracts both JWTs from a Treesinger session response, jq-free"
 # Mirrors the parse in images/hytale/run (POSIX sed, no jq in the image). JWTs
 # are base64url + '.', so a "[^\"]*" field match is safe.

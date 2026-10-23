@@ -37,8 +37,13 @@ cd /data
 # self-refreshes from there, so a container recreated at any time comes up
 # authenticated. If the broker cannot be reached we warn and boot unauthenticated:
 # the same graceful state as no tokens at all, recoverable without a crash.
-if [ -n "${TREESINGER_URL:-}" ]; then
-    if resp=$(curl -fsS -m 10 -X POST "$TREESINGER_URL/v1/session" 2>/dev/null); then
+#
+# The broker is TREESINGER_URL over TCP (Docker: http://treesinger:8080), or
+# TREESINGER_SOCKET, its unix socket (systemd: /run/treesinger/treesinger.sock,
+# docs/nix.md) — the same POST either way.
+treesinger() {  # $1 = the broker, for the log; the rest = where curl POSTs
+    broker=$1; shift
+    if resp=$(curl -fsS -m 10 -X POST "$@" 2>/dev/null); then
         # Flat JSON: {"sessionToken":"…","identityToken":"…",…}. Extract without
         # jq (not in the image); JWTs are base64url + '.', never a '"', so
         # [^"]* is a safe field match.
@@ -47,13 +52,18 @@ if [ -n "${TREESINGER_URL:-}" ]; then
         if [ -n "$st" ] && [ -n "$it" ]; then
             export HYTALE_SERVER_SESSION_TOKEN="$st"
             export HYTALE_SERVER_IDENTITY_TOKEN="$it"
-            echo "[hytale] authenticated via Treesinger ($TREESINGER_URL)" >&2
+            echo "[hytale] authenticated via Treesinger ($broker)" >&2
         else
             echo "[hytale] WARNING: Treesinger response carried no tokens; booting unauthenticated" >&2
         fi
     else
-        echo "[hytale] WARNING: could not reach Treesinger at $TREESINGER_URL; booting unauthenticated" >&2
+        echo "[hytale] WARNING: could not reach Treesinger at $broker; booting unauthenticated" >&2
     fi
+}
+if [ -n "${TREESINGER_SOCKET:-}" ]; then
+    treesinger "$TREESINGER_SOCKET" --unix-socket "$TREESINGER_SOCKET" http://treesinger/v1/session
+elif [ -n "${TREESINGER_URL:-}" ]; then
+    treesinger "$TREESINGER_URL" "$TREESINGER_URL/v1/session"
 fi
 
 # Assemble the launch, then append whatever arguments the container was given
@@ -70,8 +80,9 @@ set -- -jar "$jar" --assets "$assets" --disable-sentry \
     --backup --backup-dir /data/backups --backup-frequency 30 "$@"
 
 # JVM args go before -jar, so prepend them. A pre-trained AOT cache would cut
-# boot time; 0.5.9 ships none, but honour one if a future build bakes it.
-aot=$(find "$game" -maxdepth 3 -name 'HytaleServer.aot' 2>/dev/null | head -1)
+# boot time; 0.5.9 ships none, but honour one if a future build bakes it. -H:
+# natively /opt/hytale is a link to the package (docs/nix.md).
+aot=$(find -H "$game" -maxdepth 3 -name 'HytaleServer.aot' 2>/dev/null | head -1)
 [ -n "$aot" ] && set -- "-XX:AOTCache=$aot" "$@"
 # Custom JVM options (heap, GC) via /data/jvm.options, one flag per line — the
 # same @-file the official launcher reads, just from the volume.
