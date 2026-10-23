@@ -47,6 +47,9 @@ func main() {
 	go answerQueries(conn)
 
 	fmt.Printf("fake-valheim: listening on udp/%d (query udp/%d)\n", gamePort, queryPort)
+	// The line the real server prints once its world is loaded and its socket
+	// open: what the native units are ready on.
+	fmt.Println("Opened Steam server")
 
 	// SIGTERM is deliberately swallowed: if the stop hook sends the wrong
 	// signal, the test should see a container that had to be killed.

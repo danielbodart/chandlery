@@ -93,6 +93,42 @@ let
         }
       ];
     };
+    valheim = {
+      package = pkgs.callPackage ./pkgs/valheim.nix { };
+      packageText = "pkgs.callPackage (chandlery + \"/nix/pkgs/valheim.nix\") { }";
+      port = 2456;
+      # World loaded and socket open; PlayFab's under -crossplay.
+      readyPattern = "Opened (Steam|PlayFab) server";
+      # The game, and Steam's query port: always the game's plus one.
+      ports = s: [
+        {
+          port = s.port;
+          proto = "udp";
+        }
+        {
+          port = s.port + 1;
+          proto = "udp";
+        }
+      ];
+      prepareArgs = s: [ ];
+      # Its whole configuration is its command line; images/valheim/run adds
+      # -nographics -batchmode -savedir /data and -password $VALHEIM_PASSWORD.
+      args = s: [
+        "-port"
+        (toString s.port)
+      ];
+      # The image's CMD, named after the server.
+      extraArgs = name: [
+        "-name"
+        name
+        "-world"
+        "Dedicated"
+        "-public"
+        "1"
+      ];
+      # No Valheim was ever behind loggifly, so there is nothing to carry over.
+      rules = [ ];
+    };
   };
 
   runDir = name: "/run/chandlery/${name}";
@@ -167,13 +203,15 @@ let
         port = mkOption {
           type = types.port;
           default = game.port;
-          defaultText = literalExpression "19132 (Bedrock), 5520 (Hytale)";
+          defaultText = literalExpression "19132 (Bedrock), 5520 (Hytale), 2456 (Valheim)";
           description = ''
             The port the server binds. Natively there is no host-side remap, so
             servers of one game on one host each need their own (Hytale's
             5520, 5521, …). Bedrock's is set by rewriting just `server-port` in
             `/data/server.properties`; Hytale's is `--bind 0.0.0.0:<port>` on its
-            command line, `config.json` untouched.
+            command line, `config.json` untouched; Valheim's is `-port <port>`,
+            and its Steam query port is always this plus one, so two Valheim
+            servers want ports two apart.
           '';
         };
 
@@ -201,7 +239,13 @@ let
         extraArgs = mkOption {
           type = types.listOf types.str;
           default = game.extraArgs name;
-          description = "Arguments appended to the game's command line, verbatim.";
+          defaultText = literalExpression ''[ ] (Bedrock, Hytale), [ "-name" "<name>" "-world" "Dedicated" "-public" "1" ] (Valheim)'';
+          description = ''
+            Arguments appended to the game's command line, verbatim. Valheim's
+            whole configuration is here (its default is the image's `CMD`); its
+            password is not: put `VALHEIM_PASSWORD=…` in an `environmentFiles`
+            file, which `images/valheim/run` turns into `-password`.
+          '';
         };
 
         environment = mkOption {
@@ -258,7 +302,7 @@ let
         readyPattern = mkOption {
           type = types.nullOr types.str;
           default = game.readyPattern;
-          defaultText = literalExpression ''"Server started\\." (Bedrock), "Hytale Server Booted!" (Hytale)'';
+          defaultText = literalExpression ''"Server started\\." (Bedrock), "Hytale Server Booted!" (Hytale), "Opened (Steam|PlayFab) server" (Valheim)'';
           description = ''
             An RE2 matching the line the game prints when players can join: the
             unit is `Type=notify` and becomes active on it. `null` makes it
@@ -415,6 +459,11 @@ let
             "-/etc/localtime"
             "-/etc/zoneinfo"
             "-/etc/ssl/certs/ca-certificates.crt"
+            # Its own user's entry, as the image's /etc/passwd has it: Unity
+            # (Valheim) dereferences getpwuid(getuid()) unchecked, and segfaults
+            # without one.
+            "-/etc/passwd"
+            "-/etc/group"
           ]
           ++ lib.optional (s.machineIdFile != null) "${s.machineIdFile}:/etc/machine-id"
           # The directory, not the socket: a bind of the socket would pin the

@@ -92,6 +92,7 @@
           module = test ./nix/tests/module.nix;
           bedrock-vm = test ./nix/tests/bedrock.nix;
           hytale-vm = test ./nix/tests/hytale.nix;
+          valheim-vm = test ./nix/tests/valheim.nix;
         };
 
       # Checks too heavy for every push (gigabytes of game, a 4 GB JVM): run by
@@ -104,6 +105,7 @@
         {
           inherit (self.packages.x86_64-linux) hytale valheim;
           hytale-vm = test ./nix/tests/hytale-real.nix;
+          valheim-vm = test ./nix/tests/valheim-real.nix;
         };
 
       devShells = forAll (system: {
