@@ -1,7 +1,7 @@
 {
   "bedrock": {
-    "version": "1.26.52.3",
-    "sha256": "f6348d84fa714d04ca194f207e89453ca6bba0a1359396475271a52a150471c6"
+    "version": "1.26.60.6",
+    "sha256": "cbbd5414fa6a310353ed1fc76a0ba691c3fd1ea852fd04bb76764ee4c1afdb98"
   },
   "hytale": {
     "version": "0.7.4",
