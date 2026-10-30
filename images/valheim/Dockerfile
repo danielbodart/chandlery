@@ -43,10 +43,10 @@ ARG DEPOTDOWNLOADER_SHA256
 ARG SOURCE_DATE_EPOCH=0
 ARG ASSET_BUCKETS=32
 
-# ca-certificates + libicu for DepotDownloader (self-contained .NET); lib32gcc-s1
-# for SteamCMD (32-bit), which supplies the current steamclient.so.
+# ca-certificates + libicu for DepotDownloader (self-contained .NET); unzip for
+# it and for SteamCMD's package, which supplies the current steamclient.so.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl unzip libicu72 lib32gcc-s1 \
+ && apt-get install -y --no-install-recommends ca-certificates curl unzip libicu72 \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --chmod=0755 build/bucketize build/bake-layout images/valheim/fetch /usr/local/bin/

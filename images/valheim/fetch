@@ -56,18 +56,28 @@ mkdir -p "$stage"
 chmod +x "$stage/valheim_server.x86_64"
 rm -rf /dl "$HOME"
 
-# A current steamclient.so from SteamCMD, baked next to the server. The depot's
-# own is from 2022 and the server's Steam init rejects it ("Missing interface
-# adapter for SteamGameServer015"); SteamCMD self-updates to a current one. It
-# must be the linux64 library — the server is 64-bit, and a bare `find | head`
-# can pick linux32 first, which then fails init with "Steam is not initialized".
-log "fetching a current steamclient.so via SteamCMD"
-mkdir -p /opt/steamcmd
-curl -fsSL --http1.1 --retry 5 --retry-all-errors \
-     https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz \
-  | tar -xz -C /opt/steamcmd
-/opt/steamcmd/steamcmd.sh +quit >/dev/null 2>&1 || true
-sc=$(find /opt/steamcmd -path '*/linux64/*' -name steamclient.so | head -1)
-[ -n "$sc" ] || sc=$(find /opt/steamcmd -name steamclient.so | head -1)
-[ -n "$sc" ] || { log "SteamCMD produced no steamclient.so"; exit 70; }
-cp "$sc" "$stage/steamclient.so"
+# A current steamclient.so from SteamCMD's own package, baked next to the
+# server. The depot's own is from 2022 and the server's Steam init rejects it
+# ("Missing interface adapter for SteamGameServer015"). It must be the linux64
+# library — the server is 64-bit; linux32's fails init with "Steam is not
+# initialized".
+#
+# We take it straight from the package SteamCMD would self-update to, rather
+# than running SteamCMD: its bootstrapper is a 32-bit binary, and on the
+# ubuntu-26.04 runners (Docker 29, kernel 7.0) the default seccomp profile blocks
+# the 32-bit socket calls its name lookups need, so it can never reach Steam
+# ("http error 0", "Steamcmd needs to be online to update") and leaves no
+# library behind. The manifest names the current package and its sha256.
+cdn=https://media.steampowered.com/client
+log "fetching a current steamclient.so from SteamCMD's package"
+curl -fsSL --retry 5 --retry-all-errors -o /tmp/steamcmd.vdf "$cdn/steam_cmd_linux"
+pkg=$(awk '/"steamcmd_bins_linux"/{p=1} p&&$1=="\"file\""{gsub(/"/,"",$2); print $2; exit}' /tmp/steamcmd.vdf)
+sha=$(awk '/"steamcmd_bins_linux"/{p=1} p&&$1=="\"sha2\""{gsub(/"/,"",$2); print $2; exit}' /tmp/steamcmd.vdf)
+[ -n "$pkg" ] && [ -n "$sha" ] || { log "SteamCMD manifest names no steamcmd_bins_linux package"; exit 70; }
+curl -fsSL --retry 5 --retry-all-errors -o /tmp/steamcmd-bins.zip "$cdn/$pkg"
+echo "${sha}  /tmp/steamcmd-bins.zip" | sha256sum -c - >/dev/null \
+  || { log "SteamCMD package $pkg failed its sha256"; exit 70; }
+unzip -q -o /tmp/steamcmd-bins.zip linux64/steamclient.so -d /tmp/steamcmd \
+  || { log "SteamCMD package $pkg has no linux64/steamclient.so"; exit 70; }
+cp /tmp/steamcmd/linux64/steamclient.so "$stage/steamclient.so"
+rm -rf /tmp/steamcmd.vdf /tmp/steamcmd-bins.zip /tmp/steamcmd
