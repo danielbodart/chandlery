@@ -20,7 +20,7 @@ on:
         description: 'Build this exact build id instead of whatever is current'
         required: false
       force:
-        description: 'Rebuild even if this build id was already published'
+        description: 'Rebuild even if this build id was already built from these inputs'
         type: boolean
         default: false
   push:
@@ -30,6 +30,7 @@ on:
       - 'build/**'
       - 'images/valheim/**'
       - '.github/workflows/valheim.yml'
+      - 'mise.toml'
 
 concurrency:
   group: valheim
@@ -50,6 +51,7 @@ jobs:
       build_id: ${{ steps.upstream.outputs.build_id }}
       manifest_gid: ${{ steps.upstream.outputs.manifest_gid }}
       needed: ${{ steps.built.outputs.needed }}
+      inputs: ${{ steps.built.outputs.inputs }}
     steps:
       - uses: actions/checkout@v7
 
@@ -75,29 +77,33 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: built
-        name: Skip when this game build AND this code are already published
+        name: Skip when this game build is already built from these inputs
         env:
           FORCE: ${{ inputs.force }}
           BUILD_ID: ${{ steps.upstream.outputs.build_id }}
         run: |
           # The tag is the game version, which we do not know without downloading,
           # so the "already built?" check reads two labels off the published
-          # :latest — the Steam build id (the game) and our revision (the code).
-          # Both matching means nothing changed; a new game build OR a code change
-          # rebuilds. No EVENT=push special-case: a triggering push has a new SHA.
+          # :latest — the Steam build id (the game) and the hash of this repo's
+          # inputs to the image (build/image-inputs). Both matching means nothing
+          # changed; a new game build or a change to those inputs rebuilds, and
+          # nothing else does — not a new commit alone, such as a pin in
+          # nix/versions.json.
+          inputs="$(build/image-inputs valheim)"
+          echo "inputs=$inputs" >> "$GITHUB_OUTPUT"
           if [ "$FORCE" = "true" ]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
             echo "Building: forced."
           else
             meta=$(docker buildx imagetools inspect "${IMAGE}:latest" \
-              --format '{{ index .Image.Config.Labels "dev.chandlery.valheim.build-id" }} {{ index .Image.Config.Labels "org.opencontainers.image.revision" }}' 2>/dev/null || echo "")
-            pub_build="${meta%% *}"; pub_rev="${meta##* }"
-            if [ "$pub_build" = "$BUILD_ID" ] && [ "$pub_rev" = "$GITHUB_SHA" ]; then
+              --format '{{ index .Image.Config.Labels "dev.chandlery.valheim.build-id" }} {{ index .Image.Config.Labels "dev.chandlery.inputs" }}' 2>/dev/null || echo "")
+            pub_build="${meta%% *}"; pub_inputs="${meta##* }"
+            if [ "$pub_build" = "$BUILD_ID" ] && [ "$pub_inputs" = "$inputs" ]; then
               echo "needed=false" >> "$GITHUB_OUTPUT"
-              echo "build ${BUILD_ID} at this revision already published; nothing changed."
+              echo "Build ${BUILD_ID} is already built from inputs ${inputs}; nothing changed."
             else
               echo "needed=true" >> "$GITHUB_OUTPUT"
-              echo "New game build (${pub_build:-none} -> ${BUILD_ID}) or new code. Building."
+              echo "Building ${BUILD_ID} from inputs ${inputs} (published: build ${pub_build:-none}, inputs ${pub_inputs:-none})."
             fi
           fi
 
@@ -111,6 +117,10 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
+
+      # The health probe the image copies in: dist/linux-amd64/chandlery-a2s.
+      - uses: jdx/mise-action@v5
+      - run: mise run dist
 
       - uses: docker/login-action@v4
         with:
@@ -135,6 +145,7 @@ jobs:
           DOCKER_BUILDKIT: "1"
           BUILD_ID: ${{ needs.resolve.outputs.build_id }}
           MANIFEST_GID: ${{ needs.resolve.outputs.manifest_gid }}
+          INPUTS: ${{ needs.resolve.outputs.inputs }}
           STEAM_USERNAME: ${{ secrets.STEAM_USERNAME }}
           STEAM_LOGIN_TOKEN: ${{ secrets.STEAM_LOGIN_TOKEN }}
         run: |
@@ -153,6 +164,7 @@ jobs:
             --build-arg STEAM_USERNAME="$STEAM_USERNAME" \
             --build-arg SOURCE_DATE_EPOCH=0 \
             --build-arg CHANDLERY_REVISION="$GITHUB_SHA" \
+            --label dev.chandlery.inputs="$INPUTS" \
             --secret id=steam-token,src="$RUNNER_TEMP/steam-token" \
             -t valheim:built -f images/valheim/Dockerfile .
           rm -f "$RUNNER_TEMP/steam-token"
@@ -198,9 +210,11 @@ jobs:
       # The Nix package (docs/nix.md) takes the game from this image's layers:
       # pin the image just pushed, by digest, in nix/versions.json, with the
       # Steam build id and manifest gid it was built from. Only from master,
-      # whose image this is. A push made with GITHUB_TOKEN starts no workflow,
-      # so this cannot loop; an image rebuilt only for our own code pushes
-      # nothing.
+      # whose image this is. The rebuilt image's layers are not byte-for-byte
+      # reproducible, so even a rebuild for our own code re-pins; that commit
+      # cannot start a rebuild, because the check above is keyed on the build
+      # id and the image's inputs, which a pin does not touch, and never on
+      # the commit.
       - name: Pin it in nix/versions.json
         if: github.ref == 'refs/heads/master'
         env:

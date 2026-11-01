@@ -508,9 +508,12 @@ one missed would lose part of the game. `revision` is the image's
 `org.opencontainers.image.revision` label. A multi-platform index resolves to
 its linux/amd64 image. `OCI_REGISTRY_URL` points it at a registry on disk for
 its tests. It leaves the file **unchanged** when only `digest`/`revision`
-moved but the version and `/opt` layers did not (a code-only image rebuild): the
-package would be byte-identical, and a new store path would make Tidewaiter
-restart a server for nothing.
+moved but the version and `/opt` layers did not: the package would be
+byte-identical, and a new store path would make Tidewaiter restart a server for
+nothing. Rebuilt Hytale and Valheim images are not byte-for-byte reproducible,
+though, so their `/opt` layers do move on a rebuild; what keeps that rare is
+that CI rebuilds a game only when its upstream version or its inputs
+(`build/image-inputs`) change, never for a commit alone.
 
 ### CI
 
@@ -530,12 +533,18 @@ Each game's workflow ends, in the run that published the image and only on
 `fetch`, `reset --hard FETCH_HEAD`, `update-versions` (as it is on `master`
 now), commit `<Game>: <version> in nix/versions.json`, `push`. The three
 workflows can finish together, and re-applying on top of the winner is cheaper
-and safer than merging JSON; five attempts, then exit 75. An unchanged pin (a
-code-only rebuild) pushes nothing. The script is one function called on its
+and safer than merging JSON; five attempts, then exit 75. An unchanged pin (Bedrock's,
+rebuilt for our code) pushes nothing. The script is one function called on its
 last line, because the reset can rewrite the file `sh` is reading. The jobs get
 `contents: write` (Hytale's single job at the workflow level) and commit as
-`github-actions[bot]`. A push made with `GITHUB_TOKEN` starts no workflow, so
-this cannot loop. It also means CI does not run on a pin; see `nix.yml` below.
+`github-actions[bot]`. A push made with `GITHUB_TOKEN` starts no workflow, and
+a pin commit does not make the next scheduled run rebuild either: each
+workflow's "already built?" check compares the upstream version and the hash of
+the image's inputs in this repository (`build/image-inputs`: the base, `build/`,
+the game's directory and workflow) with labels on the published image, never the
+commit. Keyed on the commit, as it once was, every pin made every game "new
+code", and the rebuilt, non-reproducible layers made a new pin: a loop. It also
+means CI does not run on a pin; see `nix.yml` below.
 `test/versions_test.sh` drives it against a bare repository: a push, an
 unchanged pin, a re-apply on top of another workflow's pin, a refused push
 retried, and giving up.

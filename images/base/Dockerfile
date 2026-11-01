@@ -5,8 +5,9 @@
 # is baked in by the per-game image on top of this.
 #
 # glibc, not musl: Bedrock's binary and SteamCMD both want it.
-ARG DEBIAN_TAG=bookworm-slim
-FROM debian:${DEBIAN_TAG}
+# By digest, which the weekly update moves (.github/workflows/update.yml).
+ARG DEBIAN=debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+FROM ${DEBIAN}
 
 ARG CHANDLERY_UID=1000
 ARG CHANDLERY_GID=1000

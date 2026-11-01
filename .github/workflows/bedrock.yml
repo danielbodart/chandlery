@@ -15,7 +15,7 @@ on:
         description: 'Build this exact version instead of whatever is current'
         required: false
       force:
-        description: 'Rebuild even if the tag already exists'
+        description: 'Rebuild even if this version was already built from these inputs'
         type: boolean
         default: false
   push:
@@ -45,6 +45,7 @@ jobs:
       version: ${{ steps.upstream.outputs.version }}
       sha256: ${{ steps.upstream.outputs.sha256 }}
       needed: ${{ steps.built.outputs.needed }}
+      inputs: ${{ steps.built.outputs.inputs }}
     steps:
       - uses: actions/checkout@v7
 
@@ -80,25 +81,28 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: built
-        name: Skip when this game version AND this code are already built
+        name: Skip when this game version is already built from these inputs
         env:
           FORCE: ${{ inputs.force }}
           VERSION: ${{ steps.upstream.outputs.version }}
         run: |
-          # The immutable tag is <game-version>-<our-revision>. It exists only if
-          # this exact game version was already built from this exact repo state,
-          # so its presence means nothing changed — game bump or a code change both
-          # give a tag that does not exist yet, and both build.
-          rev="${GITHUB_SHA::7}"
+          # Already built when the published :<version> carries the hash of
+          # this repo's inputs to the image (build/image-inputs): a new game
+          # version or a change to those inputs builds, and nothing else does —
+          # not a new commit alone, such as a pin in nix/versions.json.
+          inputs="$(build/image-inputs bedrock)"
+          echo "inputs=$inputs" >> "$GITHUB_OUTPUT"
+          published="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" \
+            --format '{{ index .Image.Config.Labels "dev.chandlery.inputs" }}' 2>/dev/null || true)"
           if [ "$FORCE" = "true" ]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
             echo "Building: forced."
-          elif docker buildx imagetools inspect "${IMAGE}:${VERSION}-${rev}" >/dev/null 2>&1; then
+          elif [ "$published" = "$inputs" ]; then
             echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "${IMAGE}:${VERSION}-${rev} already exists; nothing changed."
+            echo "${IMAGE}:${VERSION} is already built from inputs ${inputs}; nothing changed."
           else
             echo "needed=true" >> "$GITHUB_OUTPUT"
-            echo "New game version or new code (${VERSION}-${rev}). Building."
+            echo "Building ${VERSION} from inputs ${inputs} (published: ${published:-none})."
           fi
 
   build:
@@ -127,6 +131,7 @@ jobs:
           DOCKER_BUILDKIT: "1"
           VERSION: ${{ needs.resolve.outputs.version }}
           SHA256: ${{ needs.resolve.outputs.sha256 }}
+          INPUTS: ${{ needs.resolve.outputs.inputs }}
         run: |
           docker build -t chandlery/base:ci images/base
           rev="${GITHUB_SHA::7}"
@@ -139,6 +144,7 @@ jobs:
             --build-arg BEDROCK_SHA256="$SHA256" \
             --build-arg SOURCE_DATE_EPOCH=0 \
             --build-arg CHANDLERY_REVISION="$GITHUB_SHA" \
+            --label dev.chandlery.inputs="$INPUTS" \
             -t "${IMAGE}:${VERSION}" \
             -t "${IMAGE}:${VERSION}-${rev}" \
             -t "${IMAGE}:latest" -f images/bedrock/Dockerfile .
@@ -161,8 +167,10 @@ jobs:
       # The Nix package (docs/nix.md) builds what nix/versions.json pins: pin
       # the zip this image was just built from, by the same sha256, so the image
       # and the native package move together. Only from master, whose image
-      # this is. A push made with GITHUB_TOKEN starts no workflow, so this
-      # cannot loop; an image rebuilt only for our own code pushes nothing.
+      # this is. An image rebuilt only for our own code has the same zip, so
+      # this pushes nothing; and no pin could start a rebuild anyway, as the
+      # check above is keyed on the version and the image's inputs, never on
+      # the commit.
       - name: Pin it in nix/versions.json
         if: github.ref == 'refs/heads/master'
         env:

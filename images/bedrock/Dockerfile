@@ -20,8 +20,8 @@
 # here deliberately for the value it buys. The pin stays cryptographic: fetch
 # verifies BEDROCK_SHA256 before baking, so the build fails closed on wrong bytes.
 ARG BASE=chandlery/base:test
-ARG MC_MONITOR=itzg/mc-monitor:latest
-ARG FETCH_BASE=debian:bookworm-slim
+ARG MC_MONITOR=itzg/mc-monitor:1.18.3@sha256:f30307791501a6eec4190f4b2c32296d5f17c6673aceb18943c5ed0f56f4edfe
+ARG FETCH_BASE=debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 
 FROM ${MC_MONITOR} AS mc-monitor
 

@@ -9,15 +9,10 @@
 # is tested.
 ARG BASE=chandlery/base:test
 
-FROM golang:1.24-alpine AS build
+FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
 WORKDIR /src
 COPY test/fixtures/fake-valheim/go.mod test/fixtures/fake-valheim/main.go ./
 RUN CGO_ENABLED=0 go build -trimpath -o /fake-valheim .
-
-FROM golang:1.24-alpine AS probe
-WORKDIR /src
-COPY images/valheim/probe/go.mod images/valheim/probe/main.go ./
-RUN CGO_ENABLED=0 go build -trimpath -o /chandlery-a2s .
 
 FROM ${BASE}
 USER root
@@ -27,7 +22,8 @@ USER root
 COPY --from=build --chown=chandlery:chandlery /fake-valheim /opt/valheim/valheim_server.x86_64
 RUN : > /opt/valheim/steamclient.so && chown -R chandlery:chandlery /opt/valheim
 
-COPY --from=probe /chandlery-a2s /usr/local/bin/chandlery-a2s
+# The real probe, as the real image takes it: `mise run dist` built it.
+COPY --chmod=0755 dist/linux-amd64/chandlery-a2s /usr/local/bin/chandlery-a2s
 COPY --chmod=0755 images/valheim/run       /usr/local/bin/valheim-server
 COPY --chmod=0755 images/valheim/prepare   /usr/local/lib/chandlery/prepare
 COPY --chmod=0755 images/valheim/stop-hook /usr/local/lib/chandlery/stop

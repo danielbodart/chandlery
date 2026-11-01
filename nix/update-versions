@@ -19,10 +19,12 @@
 # manifest and config are fetched anonymously, as nix/oci.nix fetches layers;
 # OCI_REGISTRY_URL (default https://<host>/v2) points the tests at a fixture.
 #
-# An image rebuilt only for our own code moves the digest and revision but not
-# the version, the /opt layers or the extra keys; that leaves the file as it
-# was, because the package would be byte-for-byte the same, and a new pin would
-# only make Tidewaiter restart a server for nothing.
+# An image whose version, /opt layers and extra keys are unchanged leaves the
+# file as it was, even if its digest and revision moved, because the package
+# would be byte-for-byte the same, and a new pin would only make Tidewaiter
+# restart a server for nothing. (Hytale's and Valheim's rebuilt layers are not
+# reproducible, so a rebuild does re-pin them; CI rebuilds only when the game
+# or the image's inputs change, build/image-inputs.)
 #
 # Only jq: CI needs no Nix to bump a version. The file keeps its key order and
 # two-space indent, so a bump is one hunk per game; an unchanged pin leaves the

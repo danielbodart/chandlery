@@ -18,7 +18,7 @@ on:
         description: 'Build this exact version instead of detecting'
         required: false
       force:
-        description: 'Rebuild even if the tag already exists'
+        description: 'Rebuild even if this version was already built from these inputs'
         type: boolean
         default: false
   push:
@@ -103,16 +103,19 @@ jobs:
           sha="$(./images/hytale/upstream-version --sha256)"
           echo "Hytale $HYTALE_PATCHLINE is on $version (sha256 $sha)"
 
-          # The immutable tag is <game-version>-<our-revision>; it exists only if
-          # this game version was already built from this repo state, so a game
-          # bump or a code change both give a new tag and build. (No EVENT=push
-          # special-case needed — a triggering push has a new SHA, hence new tag.)
-          rev="${GITHUB_SHA::7}"
-          if [ "$FORCE" != "true" ] \
-             && docker buildx imagetools inspect "${IMAGE}:${version}-${rev}" >/dev/null 2>&1; then
-            echo "${IMAGE}:${version}-${rev} already exists; nothing changed."
+          # Already built when the published :<version> carries the hash of
+          # this repo's inputs to the image (build/image-inputs): a new game
+          # version or a change to those inputs builds, and nothing else does —
+          # not a new commit alone, such as a pin in nix/versions.json.
+          inputs="$(build/image-inputs hytale)"
+          published="$(docker buildx imagetools inspect "${IMAGE}:${version}" \
+            --format '{{ index .Image.Config.Labels "dev.chandlery.inputs" }}' 2>/dev/null || true)"
+          if [ "$FORCE" != "true" ] && [ "$published" = "$inputs" ]; then
+            echo "${IMAGE}:${version} is already built from inputs ${inputs}; nothing changed."
             exit 0
           fi
+          echo "Building ${version} from inputs ${inputs} (published: ${published:-none})."
+          rev="${GITHUB_SHA::7}"
 
           # The access token to a file, owner-only, for the build secret — never
           # baked, never on a command line.
@@ -126,6 +129,7 @@ jobs:
             --build-arg HYTALE_SHA256="$sha" \
             --build-arg SOURCE_DATE_EPOCH=0 \
             --build-arg CHANDLERY_REVISION="$GITHUB_SHA" \
+            --label dev.chandlery.inputs="$inputs" \
             --secret id=hytale-token,src="$RUNNER_TEMP/hytale-token" \
             -t "${IMAGE}:${version}" \
             -t "${IMAGE}:${version}-${rev}" \
@@ -148,9 +152,11 @@ jobs:
 
       # The Nix package (docs/nix.md) takes the game from this image's layers:
       # pin the image just pushed, by digest, in nix/versions.json. Its own step,
-      # without the access token. Only from master, whose image this is. A push
-      # made with GITHUB_TOKEN starts no workflow, so this cannot loop; an image
-      # rebuilt only for our own code pushes nothing.
+      # without the access token. Only from master, whose image this is. The
+      # rebuilt image's layers are not byte-for-byte reproducible, so even a
+      # rebuild for our own code re-pins; that commit cannot start a rebuild,
+      # because the check above is keyed on the version and the image's inputs,
+      # which a pin does not touch, and never on the commit.
       - name: Pin it in nix/versions.json
         if: steps.build.outputs.ref != '' && github.ref == 'refs/heads/master'
         env:

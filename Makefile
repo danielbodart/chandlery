@@ -14,6 +14,7 @@ SOURCE_DATE_EPOCH ?= 0
 # <game-version>-<revision>, so a rebuild of the same game version with improved
 # tooling ships a distinct, immutable image while the game version stays obvious.
 # Recorded as org.opencontainers.image.revision; the .version label is the game.
+# (Whether CI rebuilds is decided by build/image-inputs, never by the revision.)
 CHANDLERY_REVISION ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 
 # Only needed behind a TLS-terminating proxy; empty everywhere else.
@@ -47,7 +48,7 @@ VALHEIM_VERSION      ?= dev
 HYTALE_VERSION   ?= dev
 HYTALE_PATCHLINE ?= release
 
-.PHONY: help base bedrock valheim hytale fake-valheim fake-hytale test test-base test-bedrock test-valheim test-valheim-adapter test-hytale test-hytale-adapter test-systemd test-versions install-systemd clean
+.PHONY: help base dist bedrock valheim hytale fake-valheim fake-hytale test test-base test-bedrock test-valheim test-valheim-adapter test-hytale test-hytale-adapter test-systemd test-versions install-systemd clean
 
 help:
 	@echo "make base        build the skeleton image"
@@ -65,6 +66,11 @@ help:
 base:
 	docker build -t $(REGISTRY)/base:$(TAG) images/base
 
+# Our own binaries the images copy in (the Valheim probe), built by mise rather
+# than in a Go image: dist/linux-amd64/.
+dist:
+	mise run dist
+
 bedrock: base
 	docker build $(BUILD_SECRETS) --build-arg BASE=$(REGISTRY)/base:$(TAG) \
 	  --build-arg BEDROCK_VERSION=$(BEDROCK_VERSION) \
@@ -80,7 +86,7 @@ test-bedrock: bedrock
 	  -t $(REGISTRY)/test-raknet-pong:$(TAG) test/fixtures/raknet-pong
 	BEDROCK_VERSION=$(BEDROCK_VERSION) ./test/bedrock_test.sh
 
-valheim: base
+valheim: base dist
 	docker build $(BUILD_SECRETS) --build-arg BASE=$(REGISTRY)/base:$(TAG) \
 	  --build-arg VALHEIM_VERSION=$(VALHEIM_VERSION) \
 	  --build-arg VALHEIM_BUILD_ID=$(VALHEIM_BUILD_ID) \
@@ -95,7 +101,7 @@ valheim: base
 
 # The adapter — prepare checks, argument assembly, stop signal, health probe —
 # on a fake server, so it is testable without a 1.6 GB download.
-fake-valheim: base
+fake-valheim: base dist
 	docker build -f test/fixtures/fake-valheim/Dockerfile \
 	  --build-arg BASE=$(REGISTRY)/base:$(TAG) \
 	  -t $(REGISTRY)/test-fake-valheim:$(TAG) .

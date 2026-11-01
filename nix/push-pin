@@ -9,7 +9,7 @@
 # branch as it is now — fetch, reset, rewrite the pin, commit, push — so a lost
 # race with another game's workflow is re-applied on top of the winner rather
 # than merged: re-running the rewrite is cheaper and safer than merging JSON.
-# An unchanged pin (an image rebuilt only for our own code) pushes nothing.
+# An unchanged pin pushes nothing.
 #
 # PIN_REMOTE (default origin) and PIN_BRANCH (default master) say where;
 # PIN_ATTEMPTS (default 5) how often to try. The commit uses whatever git

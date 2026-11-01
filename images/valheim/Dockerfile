@@ -20,16 +20,9 @@
 # gid. The account.config token is a BUILD SECRET (id=steam-token), the username a
 # build-arg; neither rides into the image, which carries no fetch machinery.
 ARG BASE=chandlery/base:test
-ARG FETCH_BASE=debian:bookworm-slim
+ARG FETCH_BASE=debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 ARG DEPOTDOWNLOADER_VERSION=3.4.0
 ARG DEPOTDOWNLOADER_SHA256=a999dec66b4850fc961bd50366696d23c2d0fad7b18790e6a5647b2f19097a53
-
-FROM golang:1.24-bookworm AS probe
-WORKDIR /src
-COPY images/valheim/probe/go.mod images/valheim/probe/main.go images/valheim/probe/main_test.go ./
-# The health check decides whether a live server gets replaced, so its tests run
-# as part of building it.
-RUN CGO_ENABLED=0 go test ./... && CGO_ENABLED=0 go build -trimpath -o /chandlery-a2s .
 
 # ---- fetch: authenticate, download the pinned manifest, split, bucket, normalise ----
 FROM ${FETCH_BASE} AS fetch
@@ -74,7 +67,9 @@ RUN test -n "${VALHEIM_BUILD_ID}"     || { echo "VALHEIM_BUILD_ID build-arg is r
  && apt-get install -y --no-install-recommends libatomic1 libpulse0 \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=probe /chandlery-a2s /usr/local/bin/chandlery-a2s
+# The health probe, built by `mise run dist` (its tests run first) before this
+# build, as the systemd tools are: no Go toolchain in the image build.
+COPY --chmod=0755 dist/linux-amd64/chandlery-a2s /usr/local/bin/chandlery-a2s
 # Asset buckets first: the lower, stable layers. Count MUST match ASSET_BUCKETS.
 COPY --from=fetch --chown=chandlery:chandlery /buckets/00/ /opt/valheim/
 COPY --from=fetch --chown=chandlery:chandlery /buckets/01/ /opt/valheim/

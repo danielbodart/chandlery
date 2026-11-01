@@ -1,0 +1,27 @@
+#!/bin/sh
+# The hash of everything in this repository that makes GAME's image: the
+# base, the shared build helpers, the game's directory (Dockerfile with its
+# base images by digest, scripts, the probe's source), its workflow (the build
+# arguments) and, for Valheim, mise.toml (the Go that builds its probe).
+#
+#   build/image-inputs bedrock|hytale|valheim
+#
+# Git's own hashes of those trees and files, at HEAD, hashed together: it moves
+# when one of them changes and never with the commit alone. CI labels each
+# image with it (dev.chandlery.inputs), and a game is rebuilt only when its
+# upstream version or this hash differs from the published image's. Keying
+# that check on the commit instead rebuilt every game on every commit; the
+# rebuilt Hytale and Valheim images are not byte-for-byte reproducible, so each
+# re-pinned itself in nix/versions.json, a commit, which rebuilt them again.
+#
+# Keep the list in step with the `paths:` of the game's workflow.
+set -eu
+
+case "${1:-}" in
+    bedrock | hytale) set -- images/base build "images/$1" ".github/workflows/$1.yml" ;;
+    valheim) set -- images/base build images/valheim .github/workflows/valheim.yml mise.toml ;;
+    *) echo "usage: build/image-inputs bedrock|hytale|valheim" >&2; exit 64 ;;
+esac
+cd "$(dirname "$0")/.." >/dev/null
+ids=$(for path; do git rev-parse --verify -q "HEAD:$path" || { echo "build/image-inputs: no $path at HEAD" >&2; exit 66; }; done)
+printf '%s\n' "$ids" | sha256sum | cut -c1-16
