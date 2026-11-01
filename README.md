@@ -102,9 +102,17 @@ Both sit beside [**portical**](https://github.com/danielbodart/portical) in the 
 
 LinuxGSM downloads the game inside the container at runtime, so the image tag says nothing about the version, and its lifecycle is pre-Docker shell. itzg is excellent for Minecraft but Minecraft-only and also runtime-download. Panels install into volumes. None cover **Bedrock + Steam + Hytale** with **image = version + native lifecycle + rebuild-on-release** — because those three games use three different distribution mechanisms. Chandlery unifies them behind one skeleton.
 
+## Channels
+
+- **Docker images** (`ghcr.io/danielbodart/chandlery/{bedrock,hytale,valheim}`): the game is the vendor's build, baked in; our part (the base, the adapters, the Valheim probe, built by `mise run dist`) sits on base images pinned by digest. Each game's workflow polls its upstream hourly and rebuilds only when the game or the image's inputs in this repository change (`build/image-inputs`), never for a commit alone. `docker run … ghcr.io/danielbodart/chandlery/<game>:<version>`.
+- **Plain systemd**: `make install-systemd` installs the native tools and the `chandlery@` template units from source ([systemd/README.md](./systemd/README.md)).
+- **Nix** (flake on nixos-26.05): our tools (`chandlery-systemd`, `chandlery-a2s`, `mc-monitor`) built by nixpkgs' Go 1.27, and the games from the published images' layers, pinned in `nix/versions.json`; `nixosModules.default` runs them. Take it as a flake input with `inputs.nixpkgs.follows`. Our tools are in [danielbodart.cachix.org](https://danielbodart.cachix.org); the games never are (they are not ours to redistribute).
+- **Updates**: [Weekly update](./.github/workflows/update.yml), Sunday 21:23 UTC, moves the flake's inputs, the mise toolchain's patch, the base images' digests and the Go modules, gated on every channel's tests, committed straight to `master`; the images then rebuild on their next hourly run if their inputs moved.
+
 ## Working on it
 
 ```console
+$ mise run check   # the Go helpers, the probe and the shell tests: no Docker, no Nix
 $ make test        # build every image and run the tests against real containers
 $ make help        # the other targets
 ```
