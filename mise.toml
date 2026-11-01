@@ -6,12 +6,13 @@
 go = "1.27.3"
 
 # The dev loop and CI's fast job: vet, format and tests of the Go helpers and
-# the probe, and the shell tests of the native tools and the pin scripts.
+# the probe, the test fixtures' fake servers, and the shell tests of the
+# native tools and the pin scripts.
 # No Docker and no Nix: `make test` drives the images, `nix flake check` the
 # packages and VM tests.
 [tasks.check]
-description = "Fast lint and tests: Go helpers, the A2S probe, the native tools' and pin scripts' shell tests"
-depends = ["check:systemd", "check:probe", "check:scripts"]
+description = "Fast lint and tests: Go helpers, the A2S probe, the test fixtures, the native tools' and pin scripts' shell tests"
+depends = ["check:systemd", "check:probe", "check:fixtures", "check:scripts"]
 
 [tasks."check:systemd"]
 dir = "systemd"
@@ -20,6 +21,12 @@ run = ['test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }', "go vet ./...", "go
 [tasks."check:probe"]
 dir = "images/valheim/probe"
 run = ['test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }', "go vet ./...", "go test ./..."]
+
+[tasks."check:fixtures"]
+run = [
+  'cd test/fixtures/fake-valheim && test -z "$(gofmt -l .)" && go vet ./...',
+  'cd test/fixtures/raknet-pong && test -z "$(gofmt -l .)" && go vet ./...',
+]
 
 [tasks."check:scripts"]
 run = ["sh test/systemd_test.sh", "sh test/versions_test.sh"]
@@ -41,3 +48,14 @@ depends = ["check:probe"]
 dir = "images/valheim/probe"
 env = { CGO_ENABLED = "0", GOOS = "linux", GOARCH = "amd64" }
 run = "go build -trimpath -o ../../../dist/linux-amd64/chandlery-a2s ."
+
+# The test fixtures' fake servers (fake Valheim, the RakNet pong) that the
+# image tests copy in, built here rather than in a Go image, into
+# test/fixtures/bin/linux-amd64/. Not shipped: only the tests use them.
+[tasks.fixtures]
+description = "The test fixtures' fake servers the image tests copy in, into test/fixtures/bin/linux-amd64/"
+env = { CGO_ENABLED = "0", GOOS = "linux", GOARCH = "amd64" }
+run = [
+  "cd test/fixtures/fake-valheim && go build -trimpath -o ../bin/linux-amd64/fake-valheim .",
+  "cd test/fixtures/raknet-pong && go build -trimpath -o ../bin/linux-amd64/raknet-pong .",
+]

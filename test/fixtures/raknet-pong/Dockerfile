@@ -1,10 +1,8 @@
+# A RakNet unconnected-pong responder on top of the Bedrock image, so the
+# health check (mc-monitor) has something to ping without a real BDS. Build
+# from the repository root: the binary is `mise run fixtures`' output.
 ARG BASE=chandlery/bedrock:test
-FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
-WORKDIR /src
-COPY go.mod main.go ./
-RUN CGO_ENABLED=0 go build -trimpath -o /raknet-pong main.go
-
 FROM ${BASE}
 USER root
-COPY --from=build /raknet-pong /usr/local/bin/raknet-pong
+COPY --chmod=0755 test/fixtures/bin/linux-amd64/raknet-pong /usr/local/bin/raknet-pong
 USER chandlery

@@ -48,7 +48,7 @@ VALHEIM_VERSION      ?= dev
 HYTALE_VERSION   ?= dev
 HYTALE_PATCHLINE ?= release
 
-.PHONY: help base dist bedrock valheim hytale fake-valheim fake-hytale test test-base test-bedrock test-valheim test-valheim-adapter test-hytale test-hytale-adapter test-systemd test-versions install-systemd clean
+.PHONY: help base dist fixtures bedrock valheim hytale fake-valheim fake-hytale test test-base test-bedrock test-valheim test-valheim-adapter test-hytale test-hytale-adapter test-systemd test-versions install-systemd clean
 
 help:
 	@echo "make base        build the skeleton image"
@@ -71,6 +71,11 @@ base:
 dist:
 	mise run dist
 
+# The test fixtures' fake servers, likewise built by mise rather than in a Go
+# image: test/fixtures/bin/linux-amd64/.
+fixtures:
+	mise run fixtures
+
 bedrock: base
 	docker build $(BUILD_SECRETS) --build-arg BASE=$(REGISTRY)/base:$(TAG) \
 	  --build-arg BEDROCK_VERSION=$(BEDROCK_VERSION) \
@@ -81,9 +86,10 @@ bedrock: base
 	  -t $(REGISTRY)/bedrock:$(BEDROCK_VERSION)-$(CHANDLERY_REVISION) \
 	  -t $(REGISTRY)/bedrock:$(TAG) -f images/bedrock/Dockerfile .
 
-test-bedrock: bedrock
-	docker build --build-arg BASE=$(REGISTRY)/bedrock:$(TAG) \
-	  -t $(REGISTRY)/test-raknet-pong:$(TAG) test/fixtures/raknet-pong
+test-bedrock: bedrock fixtures
+	docker build -f test/fixtures/raknet-pong/Dockerfile \
+	  --build-arg BASE=$(REGISTRY)/bedrock:$(TAG) \
+	  -t $(REGISTRY)/test-raknet-pong:$(TAG) .
 	BEDROCK_VERSION=$(BEDROCK_VERSION) ./test/bedrock_test.sh
 
 valheim: base dist
@@ -101,7 +107,7 @@ valheim: base dist
 
 # The adapter — prepare checks, argument assembly, stop signal, health probe —
 # on a fake server, so it is testable without a 1.6 GB download.
-fake-valheim: base dist
+fake-valheim: base dist fixtures
 	docker build -f test/fixtures/fake-valheim/Dockerfile \
 	  --build-arg BASE=$(REGISTRY)/base:$(TAG) \
 	  -t $(REGISTRY)/test-fake-valheim:$(TAG) .

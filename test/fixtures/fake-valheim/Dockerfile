@@ -9,17 +9,13 @@
 # is tested.
 ARG BASE=chandlery/base:test
 
-FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
-WORKDIR /src
-COPY test/fixtures/fake-valheim/go.mod test/fixtures/fake-valheim/main.go ./
-RUN CGO_ENABLED=0 go build -trimpath -o /fake-valheim .
-
 FROM ${BASE}
 USER root
 
-# A fake baked game where the real build lays it down. A stub steamclient.so so
-# run's Steam-library wiring has something to point at.
-COPY --from=build --chown=chandlery:chandlery /fake-valheim /opt/valheim/valheim_server.x86_64
+# A fake baked game where the real build lays it down (`mise run fixtures`
+# built it). A stub steamclient.so so run's Steam-library wiring has something
+# to point at.
+COPY --chmod=0755 --chown=chandlery:chandlery test/fixtures/bin/linux-amd64/fake-valheim /opt/valheim/valheim_server.x86_64
 RUN : > /opt/valheim/steamclient.so && chown -R chandlery:chandlery /opt/valheim
 
 # The real probe, as the real image takes it: `mise run dist` built it.

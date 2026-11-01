@@ -45,6 +45,10 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}/hytale
   HYTALE_PATCHLINE: release
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # One job, because the baked build needs the access token as a build secret and
   # a bearer credential must not travel between jobs (nor become a step output).
@@ -164,5 +168,5 @@ jobs:
           REF: ${{ steps.build.outputs.ref }}
         run: |
           git config user.name 'github-actions[bot]'
-          git config user.email '41898299+github-actions[bot]@users.noreply.github.com'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           nix/push-pin oci hytale "$REF" "$VERSION"

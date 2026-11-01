@@ -44,6 +44,10 @@ env:
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/${{ github.repository }}/valheim
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   resolve:
     runs-on: ubuntu-latest
@@ -176,7 +180,7 @@ jobs:
             sleep 10
             line=$(docker logs "$cid" 2>&1 | grep -oE 'Valheim version: l-[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
             if [ -n "$line" ]; then version="${line##*l-}"; break; fi
-            docker ps -q --no-trunc | grep -q "$cid" || { echo "server exited early:"; docker logs "$cid" 2>&1 | tail -30; exit 1; }
+            grep -q "$cid" <<<"$(docker ps -q --no-trunc)" || { echo "server exited early:"; docker logs "$cid" 2>&1 | tail -30; exit 1; }
           done
           docker rm -f "$cid" >/dev/null 2>&1 || true
           [ -n "$version" ] || { echo "could not read the Valheim version"; exit 1; }
@@ -224,5 +228,5 @@ jobs:
           MANIFEST_GID: ${{ needs.resolve.outputs.manifest_gid }}
         run: |
           git config user.name 'github-actions[bot]'
-          git config user.email '41898299+github-actions[bot]@users.noreply.github.com'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           nix/push-pin oci valheim "$REF" "$VERSION" buildId="$BUILD_ID" manifestGid="$MANIFEST_GID"
