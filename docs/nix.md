@@ -36,7 +36,7 @@ nix/
     bedrock.nix               Mojang zip -> autoPatchelf'd package
     hytale.nix                GHCR layers -> package, with temurin-jre-bin-25
     valheim.nix               GHCR layers -> autoPatchelf'd package
-    mc-monitor.nix            Bedrock's health probe (itzg/mc-monitor 1.18.3, Go 1.27)
+    mc-monitor.nix            Bedrock's health probe (itzg/mc-monitor, the image's tag, Go 1.27)
     chandlery-a2s.nix         Valheim's health probe (images/valheim/probe)
     chandlery-systemd.nix     the native tools below, as one package
   module.nix                  services.chandlery

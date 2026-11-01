@@ -3,9 +3,12 @@
 #
 # What moves: the flake's inputs (nixpkgs, on nixos-26.05); each mise tool to
 # the newest patch of the minor mise.toml pins (a minor moves by hand, with the
-# flake's buildGo1xxModule); the base images' digests in the Dockerfiles,
-# under the tags they name; and the Go modules' requirements. The games do not
-# move here: each game's workflow polls its upstream hourly.
+# flake's buildGo1xxModule); mc-monitor, Bedrock's health probe, to itzg's
+# latest release in both channels at once (the image's tag and digest in
+# images/bedrock/Dockerfile, the Nix package's version and hashes in
+# nix/pkgs/mc-monitor.nix); the base images' digests in the Dockerfiles, under
+# the tags they name; and the Go modules' requirements. The games do not move
+# here: each game's workflow polls its upstream hourly.
 #
 # Why Sunday 21:23 UTC: nix-config takes its own update at 23:23 on the same
 # nixos-26.05, so the tools here are built from the nixpkgs nix-config builds
@@ -39,6 +42,10 @@ permissions:
 concurrency:
   group: update
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   update:
     runs-on: ubuntu-latest
@@ -51,6 +58,8 @@ jobs:
 
       - name: Move every dependency
         id: update
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           moved=()
@@ -69,6 +78,29 @@ jobs:
               moved+=("$tool $old -> $new")
             fi
           done < <(sed -n '/^\[tools\]/,/^\[/s/^\([A-Za-z0-9_-]*\) *= *"\([0-9.]*\)".*/\1=\2/p' mise.toml)
+
+          # mc-monitor: to itzg's latest release, the image's tag and the
+          # Nix package together, so both channels run the same probe. The
+          # source and vendor hashes are the ones Nix reports for a fake.
+          mcm_old=$(sed -n 's|^ARG MC_MONITOR=itzg/mc-monitor:\([^@]*\)@.*|\1|p' images/bedrock/Dockerfile)
+          mcm_new=$(gh api repos/itzg/mc-monitor/releases/latest --jq .tag_name)
+          if [ -n "$mcm_old" ] && [ -n "$mcm_new" ] && [ "$mcm_new" != "$mcm_old" ]; then
+            digest=$(docker buildx imagetools inspect "itzg/mc-monitor:$mcm_new" --format '{{json .Manifest}}' | jq -r .digest)
+            [[ $digest == sha256:* ]] || { echo "itzg/mc-monitor:$mcm_new has no digest: $digest" >&2; exit 1; }
+            sed -i "s|^ARG MC_MONITOR=itzg/mc-monitor:.*|ARG MC_MONITOR=itzg/mc-monitor:$mcm_new@$digest|" images/bedrock/Dockerfile
+            pkg=nix/pkgs/mc-monitor.nix
+            sed -i -e "s|^  version = \".*\";|  version = \"$mcm_new\";|" \
+                   -e 's|^    hash = ".*";|    hash = lib.fakeHash;|' "$pkg"
+            got() { nix build --no-link ".#$1" 2>&1 | sed -n 's/^ *got: *//p' | head -n 1 || true; }
+            hash=$(got mc-monitor.src)
+            [[ $hash == sha256-* ]] || { echo "no source hash for mc-monitor $mcm_new" >&2; exit 1; }
+            sed -i -e "s|^    hash = lib.fakeHash;|    hash = \"$hash\";|" \
+                   -e 's|^  vendorHash = ".*";|  vendorHash = lib.fakeHash;|' "$pkg"
+            vendor=$(got mc-monitor.goModules)
+            [[ $vendor == sha256-* ]] || { echo "no vendorHash for mc-monitor $mcm_new" >&2; exit 1; }
+            sed -i "s|^  vendorHash = lib.fakeHash;|  vendorHash = \"$vendor\";|" "$pkg"
+            moved+=("mc-monitor $mcm_old -> $mcm_new")
+          fi
 
           # The base images: each tag's current digest.
           dockerfiles=(images/*/Dockerfile test/fixtures/*/Dockerfile)

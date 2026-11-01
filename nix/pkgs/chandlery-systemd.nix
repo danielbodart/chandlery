@@ -22,6 +22,9 @@
 
 buildGo127Module {
   pname = "chandlery-systemd";
+  # A fixed version, not 0-unstable-<date> as elsewhere: a date moves with
+  # every commit, and a moved version is a new store path that restarts every
+  # game server running these tools, for commits that did not touch them.
   version = "0.1.0";
 
   src = lib.fileset.toSource {
