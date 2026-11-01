@@ -4,7 +4,8 @@
 # journalctl.
 {
   lib,
-  buildGoModule,
+  # The Go mise.toml pins, by minor.
+  buildGo127Module,
   makeWrapper,
   coreutils,
   findutils,
@@ -19,7 +20,7 @@
   jq,
 }:
 
-buildGoModule {
+buildGo127Module {
   pname = "chandlery-systemd";
   version = "0.1.0";
 

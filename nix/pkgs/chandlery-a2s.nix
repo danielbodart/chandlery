@@ -1,12 +1,13 @@
 # chandlery-a2s: the Steam A2S_INFO query Valheim's health check makes
-# (images/valheim/health). The image builds it from images/valheim/probe and
-# runs its tests as part of the build; so does this.
+# (images/valheim/health). The image takes it from `mise run dist`, which runs
+# its tests first; this builds it from the same source and runs them too.
 {
   lib,
-  buildGoModule,
+  # The Go mise.toml pins, by minor.
+  buildGo127Module,
 }:
 
-buildGoModule {
+buildGo127Module {
   pname = "chandlery-a2s";
   version = "0.1.0";
 

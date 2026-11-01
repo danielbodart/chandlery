@@ -118,7 +118,7 @@
           in
           pkgs.mkShell {
             packages = with pkgs; [
-              go
+              go_1_27
               jq
               curl
               shellcheck

@@ -37,11 +37,11 @@ func infoReply() []byte {
 	var b bytes.Buffer
 	b.Write(singlePacket)
 	b.WriteByte(a2sInfoResponse)
-	b.WriteByte(17)                      // protocol
-	b.WriteString("Chandlery Test\x00")  // name
-	b.WriteString("Dedicated\x00")       // map (Valheim reports the world)
-	b.WriteString("valheim\x00")         // folder
-	b.WriteString("Valheim\x00")         // game
+	b.WriteByte(17)                     // protocol
+	b.WriteString("Chandlery Test\x00") // name
+	b.WriteString("Dedicated\x00")      // map (Valheim reports the world)
+	b.WriteString("valheim\x00")        // folder
+	b.WriteString("Valheim\x00")        // game
 	// The app-id field is two bytes, so large ids arrive truncated. Valheim's
 	// 892970 is exactly such a case, which is why nothing reads this field.
 	binary.Write(&b, binary.LittleEndian, uint16(892970&0xffff))

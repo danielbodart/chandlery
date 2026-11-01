@@ -1,4 +1,8 @@
-# Build the images and run the tests that drive them.
+# Every channel's tests: `mise run check` (the Go helpers, the probe, the
+# native tools' and pin scripts' shell tests), the images driven by the tests,
+# and the flake with its VM tests. Our own packages built here go to
+# danielbodart.cachix.org from master; the games never do (docs/nix.md,
+# "Redistribution").
 name: ci
 
 on:
@@ -12,11 +16,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - run: mise run check
+
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
+      # The Valheim fixture copies in the probe `mise run dist` builds.
+      - uses: jdx/mise-action@v5
 
       - name: Skeleton
         run: make test-base
@@ -64,6 +77,19 @@ jobs:
           extra_nix_config: |
             system-features = nixos-test benchmark big-parallel kvm
 
+      # Pulls only: what is pushed is named below.
+      - uses: cachix/cachix-action@v17
+        with:
+          name: danielbodart
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+
       - name: nix flake check
         run: nix flake check -L
+
+      # Our own packages, never a game (unfree, redistributing it is not ours
+      # to do) and never a VM test's closure (the cache's 5 GB free tier).
+      - name: Push our packages to the cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: nix build --print-out-paths .#chandlery-systemd .#chandlery-a2s .#mc-monitor | cachix push danielbodart
 

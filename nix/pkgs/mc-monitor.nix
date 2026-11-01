@@ -1,9 +1,10 @@
 # itzg/mc-monitor: the RakNet unconnected-ping Bedrock's health check uses
-# (images/bedrock/health). The image copies it out of itzg/mc-monitor:latest;
-# here it is pinned.
+# (images/bedrock/health). The image copies it out of itzg/mc-monitor at this
+# tag, by digest; here it is built from the same tag.
 {
   lib,
-  # 1.18 wants Go 1.27, newer than nixpkgs' default.
+  # 1.18 wants Go 1.27, newer than nixpkgs' default; and it is the Go
+  # mise.toml pins.
   buildGo127Module,
   fetchFromGitHub,
 }:
