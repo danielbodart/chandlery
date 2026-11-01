@@ -51,7 +51,7 @@ jobs:
       manifest_gid: ${{ steps.upstream.outputs.manifest_gid }}
       needed: ${{ steps.built.outputs.needed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: upstream
         name: Ask Steam what the public branch is on
@@ -68,7 +68,7 @@ jobs:
           echo "manifest_gid=$manifest_gid" >> "$GITHUB_OUTPUT"
           echo "Manifest gid: $manifest_gid"
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -110,9 +110,9 @@ jobs:
       contents: write
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}

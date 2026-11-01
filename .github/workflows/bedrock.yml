@@ -46,7 +46,7 @@ jobs:
       sha256: ${{ steps.upstream.outputs.sha256 }}
       needed: ${{ steps.built.outputs.needed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: upstream
         name: Ask Mojang what it currently ships
@@ -73,7 +73,7 @@ jobs:
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "sha256: $sha"
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -110,9 +110,9 @@ jobs:
       contents: write
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}

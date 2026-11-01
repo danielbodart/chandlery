@@ -26,7 +26,7 @@ jobs:
       matrix:
         game: [hytale, valheim]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # A game's layers, its unpacked tree and a VM's disk do not fit in the
       # free runner's disk as it comes: drop the toolchains this job never uses.
