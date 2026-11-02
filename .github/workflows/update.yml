@@ -6,7 +6,9 @@
 # flake's buildGo1xxModule); mc-monitor, Bedrock's health probe, to itzg's
 # latest release in both channels at once (the image's tag and digest in
 # images/bedrock/Dockerfile, the Nix package's version and hashes in
-# nix/pkgs/mc-monitor.nix); the base images' digests in the Dockerfiles, under
+# nix/pkgs/mc-monitor.nix); DepotDownloader, which fetches Valheim, to
+# SteamRE's latest release of its major (version and SHA256 in
+# images/valheim/Dockerfile); the base images' digests in the Dockerfiles, under
 # the tags they name; and the Go modules' requirements. The games do not move
 # here: each game's workflow polls its upstream hourly.
 #
@@ -23,8 +25,9 @@
 #
 # Nothing is released from here: Chandlery's releases are the game images, and
 # each game's workflow rebuilds its image on its next hourly run when its inputs
-# moved (a base image's digest, the Go that builds the Valheim probe), because
-# its "already built?" check is keyed on them (build/image-inputs). A week in
+# moved (a base image's digest, the Go that builds the Valheim probe,
+# DepotDownloader), because its "already built?" check is keyed on them
+# (build/image-inputs). A week in
 # which only flake.lock moved rebuilds no image.
 name: Weekly update
 
@@ -100,6 +103,24 @@ jobs:
             [[ $vendor == sha256-* ]] || { echo "no vendorHash for mc-monitor $mcm_new" >&2; exit 1; }
             sed -i "s|^  vendorHash = lib.fakeHash;|  vendorHash = \"$vendor\";|" "$pkg"
             moved+=("mc-monitor $mcm_old -> $mcm_new")
+          fi
+
+          # DepotDownloader, which fetches Valheim: to SteamRE's latest release
+          # of the major the Valheim image pins, with the SHA256 of the asset
+          # images/valheim/fetch downloads. images/valheim is one of Valheim's
+          # image inputs, so a move rebuilds Valheim once, on its next run.
+          vh=images/valheim/Dockerfile
+          dd_old=$(sed -n 's|^ARG DEPOTDOWNLOADER_VERSION=||p' "$vh")
+          dd_new=$(gh api --paginate repos/SteamRE/DepotDownloader/releases \
+                     --jq '.[] | select(.draft or .prerelease | not) | .tag_name' \
+                   | sed -n "s|^DepotDownloader_\(${dd_old%%.*}\.[0-9][0-9.]*\)\$|\1|p" | sort -V | tail -n 1)
+          if [ -n "$dd_old" ] && [ -n "$dd_new" ] && [ "$dd_new" != "$dd_old" ]; then
+            url="https://github.com/SteamRE/DepotDownloader/releases/download/DepotDownloader_$dd_new/DepotDownloader-linux-x64.zip"
+            sha=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
+            [[ $sha =~ ^[0-9a-f]{64}$ ]] || { echo "no SHA256 for $url" >&2; exit 1; }
+            sed -i -e "s|^ARG DEPOTDOWNLOADER_VERSION=.*|ARG DEPOTDOWNLOADER_VERSION=$dd_new|" \
+                   -e "s|^ARG DEPOTDOWNLOADER_SHA256=.*|ARG DEPOTDOWNLOADER_SHA256=$sha|" "$vh"
+            moved+=("DepotDownloader $dd_old -> $dd_new")
           fi
 
           # The base images: each tag's current digest.
