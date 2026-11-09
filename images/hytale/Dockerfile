@@ -22,7 +22,7 @@
 # `--auth-mode offline` — is passed natively via the container's arguments
 # (compose `command:`); there is no chandlery env re-encoding.
 ARG BASE=chandlery/base:test
-ARG FETCH_BASE=debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+ARG FETCH_BASE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 # Pinned: a floating 25-jre would drift the JRE under a tag meant to mean one
 # exact thing. Temurin is Adoptium's OpenJDK.
 ARG JAVA=eclipse-temurin:25.0.3_9-jre@sha256:7c1c6297dc3a3ff947922f3ab14ecd326e29083b9edaa8dbff3b94fef1688311

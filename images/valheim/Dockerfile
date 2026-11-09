@@ -20,7 +20,7 @@
 # gid. The account.config token is a BUILD SECRET (id=steam-token), the username a
 # build-arg; neither rides into the image, which carries no fetch machinery.
 ARG BASE=chandlery/base:test
-ARG FETCH_BASE=debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
+ARG FETCH_BASE=debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 ARG DEPOTDOWNLOADER_VERSION=3.4.0
 ARG DEPOTDOWNLOADER_SHA256=a999dec66b4850fc961bd50366696d23c2d0fad7b18790e6a5647b2f19097a53
 
