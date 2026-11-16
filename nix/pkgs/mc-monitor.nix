@@ -20,6 +20,15 @@ buildGo127Module (finalAttrs: {
     hash = "sha256-L8jMv0NSzzhh0jZZs1e0/8HezGASAEpuIRqaNnFRPqE=";
   };
 
+  # Upstream's go.mod names the newest Go patch release (go 1.27.4 at 1.21.0),
+  # but a host that follows its own nixpkgs (nix-config does) may be a patch
+  # behind, and GOTOOLCHAIN=local then refuses to build. Any 1.27 builds it,
+  # so the directive is relaxed to the minor version rather than holding the
+  # server back until its nixpkgs catches up.
+  postPatch = ''
+    sed -i -E 's/^go 1\.27\.[0-9]+$/go 1.27/' go.mod
+  '';
+
   vendorHash = "sha256-eH+QGA2lcNGy9RngZr7HYYRP6pcUHJdmKm7SmNUKlJk=";
   env.CGO_ENABLED = 0;
   ldflags = [
