@@ -11,13 +11,13 @@
 
 buildGo127Module (finalAttrs: {
   pname = "mc-monitor";
-  version = "1.19.0";
+  version = "1.21.0";
 
   src = fetchFromGitHub {
     owner = "itzg";
     repo = "mc-monitor";
     tag = finalAttrs.version;
-    hash = "sha256-PMAOncg0qWX/JDK8E459+ctbQKz7VjRxOoPl8Fl8Y/g=";
+    hash = "sha256-L8jMv0NSzzhh0jZZs1e0/8HezGASAEpuIRqaNnFRPqE=";
   };
 
   vendorHash = "sha256-eH+QGA2lcNGy9RngZr7HYYRP6pcUHJdmKm7SmNUKlJk=";

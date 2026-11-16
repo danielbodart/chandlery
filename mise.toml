@@ -3,7 +3,7 @@
 # so both channels build with the same language version; the weekly update
 # moves the patch, a minor moves by hand with the flake.
 [tools]
-go = "1.27.3"
+go = "1.27.4"
 
 # The dev loop and CI's fast job: vet, format and tests of the Go helpers and
 # the probe, the test fixtures' fake servers, and the shell tests of the
