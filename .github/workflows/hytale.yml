@@ -95,7 +95,14 @@ jobs:
           # included) could echo it, so it is redacted everywhere in the log.
           echo "::add-mask::$access"
           if [ -s "$HYTALE_REFRESH_WRITEBACK" ]; then
-            gh secret set HYTALE_DOWNLOADER_REFRESH_TOKEN --repo "$REPO" < "$HYTALE_REFRESH_WRITEBACK"
+            # The old refresh token is already dead, so a lost write here locks
+            # the pipeline out until a fresh device login: ride out API blips.
+            for delay in 2 5 10 20 40 0; do
+              gh secret set HYTALE_DOWNLOADER_REFRESH_TOKEN --repo "$REPO" < "$HYTALE_REFRESH_WRITEBACK" && break
+              [ "$delay" -gt 0 ] || { echo "::error::could not write the rotated refresh token back; re-seed it with a device login"; exit 1; }
+              echo "secret write failed; retrying in ${delay}s"
+              sleep "$delay"
+            done
             echo "rotated refresh token written back to the secret"
           else
             echo "no rotation this run"
